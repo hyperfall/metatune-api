@@ -28,8 +28,31 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
     const util = require("util");
     const execAsync = util.promisify(exec);
 
-    const { stdout } = await execAsync(`fpcalc -json "${file.path}"`);
-    const { duration, fingerprint } = JSON.parse(stdout);
+const { stdout, stderr } = await execAsync(`fpcalc -json "${file.path}"`);
+console.log("🔍 Raw fpcalc stdout:\n", stdout);
+console.log("⚠️ stderr (if any):\n", stderr);
+
+let duration, fingerprint;
+try {
+  const parsed = JSON.parse(stdout);
+  duration = parsed.duration;
+  fingerprint = parsed.fingerprint;
+} catch (parseErr) {
+  console.error("❌ JSON parsing failed for fpcalc output:", parseErr);
+  return res.status(500).json({
+    error: "Failed to parse fpcalc output",
+    rawOutput: stdout,
+    parseError: parseErr.message,
+  });
+}
+
+if (!duration || !fingerprint) {
+  return res.status(500).json({
+    error: "fpcalc output incomplete",
+    rawOutput: stdout,
+    parsed: { duration, fingerprint },
+  });
+}
 
 const acoustIdResponse = await axios.get("https://api.acoustid.org/v2/lookup", {
   params: {
