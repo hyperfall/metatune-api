@@ -60,19 +60,27 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
       const year = r.releases?.[0]?.date?.split("-")[0] || "";
       const relId = r.releases?.[0]?.id;
 
-      let imageBuffer = null, imageMime = "image/jpeg";
+           let imageBuffer = null, imageMime = "image/jpeg";
       if (relId) {
         try {
-          const img = await axios.get(`https://coverartarchive.org/release/${relId}/front`, {
-            responseType: "arraybuffer"
-          });
-          imageBuffer = img.data;
-          imageMime = img.headers["content-type"];
+-         const img = await axios.get(
+-           `https://coverartarchive.org/release/${relId}/front`,
+-           { responseType: "arraybuffer" }
+-         );
+-         imageBuffer = img.data;
++         const imgRes = await axios.get(
++           `https://coverartarchive.org/release/${relId}/front`,
++           { responseType: "arraybuffer" }
++         );
++         // convert ArrayBuffer → Node.js Buffer
++         imageBuffer = Buffer.from(imgRes.data);
+          imageMime = imgRes.headers["content-type"];
           console.log("🖼️ Album Art fetched:", imageBuffer.length, imageMime);
         } catch {
           console.warn("⚠️ No album art available.");
         }
       }
+
 
       const tags = {
         title,
