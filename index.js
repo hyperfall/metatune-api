@@ -57,6 +57,9 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
 
       // fetch cover art if available
       let imageBuffer = null, imageMime = "image/jpeg";
+      console.log("🎯 Recording:", JSON.stringify(r, null, 2));
+console.log("📀 releaseId:", relId);
+
       if (relId) {
         try {
           const img = await axios.get(
