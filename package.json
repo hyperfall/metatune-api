@@ -17,6 +17,8 @@
     "express": "^5.1.0",
     "fluent-ffmpeg": "^2.1.3",
     "multer": "^2.0.1",
-    "node-id3": "^0.2.9"
+    "node-id3": "^0.2.9",
+    "fpcalc": "^1.0.0",
+    "music-metadata": "^7.15.4"
   }
 }
