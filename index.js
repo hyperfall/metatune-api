@@ -1,72 +1,90 @@
-// index.js
-const express = require("express");
-const multer = require("multer");
-const cors = require("cors");
-const axios = require("axios");
-const NodeID3 = require("node-id3");
-const { exec } = require("child_process");
-const util = require("util");
-require("dotenv").config();
+const fs = require('fs');
+const path = require('path');
+const mm = require('music-metadata');
+const fpcalc = require('fpcalc');
+const axios = require('axios');
+const NodeID3 = require('node-id3');
 
-const app = express();
-const upload = multer({ dest: "uploads/" });
-const execAsync = util.promisify(exec);
+const ACOUSTID_API_KEY = 'WrNApk27oA';
+const FILE_PATH = '12.mp3';
 
-app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
-app.use(express.json());
+async function getMetadata(filePath) {
+  const metadata = await mm.parseFile(filePath);
+  const duration = Math.round(metadata.format.duration);
+  return duration;
+}
 
-app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
-  const file = req.file;
-  if (!file) return res.status(400).json({ error: "No file uploaded" });
-
-  try {
-    // Step 1: Extract fingerprint using fpcalc
-    const { stdout } = await execAsync(`fpcalc -json "${file.path}"`);
-    const { duration, fingerprint } = JSON.parse(stdout);
-
-    if (!duration || !fingerprint) {
-      return res.status(500).json({ error: "Invalid fpcalc output" });
-    }
-
-    // Step 2: Lookup AcoustID
-    const acoustIdRes = await axios.get("https://api.acoustid.org/v2/lookup", {
-      params: {
-        client: process.env.ACOUSTID_API_KEY,
-        fingerprint,
-        duration: Math.round(duration),
-        meta: "recordings+releasegroups",
-      },
-      headers: {
-        "User-Agent": "MetaTuneApp/1.0 (contact@example.com)",
-      },
-    });
-
-    const results = acoustIdRes.data.results;
-    const match = results?.[0]?.recordings?.[0];
-
-    if (!match) {
-      return res.status(200).json({
-        success: false,
-        reason: "No strong metadata match found",
-        acoustidId: results?.[0]?.id,
-        rawResults: results,
+async function getFingerprint(filePath) {
+  return new Promise((resolve, reject) => {
+    fpcalc(filePath, (err, result) => {
+      if (err) return reject(err);
+      resolve({
+        fingerprint: result.fingerprint,
+        duration: Math.round(result.duration),
       });
-    }
+    });
+  });
+}
 
-    const tags = {
-      title: match?.title || "Unknown Title",
-      artist: match?.["artist-credit"]?.[0]?.name || "Unknown Artist",
-      album: match?.["releasegroups"]?.[0]?.title || "Unknown Album",
-    };
+async function queryAcoustID(fingerprint, duration) {
+  const response = await axios.get('https://api.acoustid.org/v2/lookup', {
+    params: {
+      client: ACOUSTID_API_KEY,
+      fingerprint,
+      duration,
+      meta: 'recordings+releasegroups',
+    },
+  });
 
-    await NodeID3.write(tags, file.path);
+  if (response.data.status !== 'ok' || response.data.results.length === 0) {
+    throw new Error('No match found in AcoustID');
+  }
 
-    res.json({
-      success: true,
-      tags,
-      acoustidId: results?.[0]?.id,
+  const id = response.data.results[0].id;
+  return id;
+}
+
+async function queryMusicBrainz(recordingId) {
+  const url = `https://musicbrainz.org/ws/2/recording?query=aid:${recordingId}&fmt=json`;
+  const response = await axios.get(url);
+
+  const recording = response.data.recordings?.[0];
+  if (!recording) throw new Error('No recording found in MusicBrainz');
+
+  return {
+    title: recording.title,
+    artist: recording['artist-credit']?.[0]?.name || 'Unknown',
+    album: recording['release-list']?.[0]?.title || 'Unknown',
+  };
+}
+
+async function writeTags(filePath, tags) {
+  return new Promise((resolve, reject) => {
+    NodeID3.write(tags, filePath, (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+}
+
+async function main() {
+  try {
+    const { fingerprint, duration } = await getFingerprint(FILE_PATH);
+    const acoustId = await queryAcoustID(fingerprint, duration);
+    const musicMetadata = await queryMusicBrainz(acoustId);
+
+    console.log('🎵 Metadata Retrieved:', musicMetadata);
+
+    await writeTags(FILE_PATH, {
+      title: musicMetadata.title,
+      artist: musicMetadata.artist,
+      album: musicMetadata.album,
     });
 
+    console.log('✅ Tags written to file.');
   } catch (err) {
-    console.error("🔥 Uncaught Error:", err);
-    res.statu
+    console.error('❌ Error:', err.message);
+  }
+}
+
+main();
