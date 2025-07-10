@@ -1,4 +1,3 @@
-// index.js
 const express   = require("express");
 const cors      = require("cors");
 const multer    = require("multer");
@@ -11,29 +10,23 @@ const ID3Writer = require("node-id3");
 
 dotenv.config();
 
-const app = express();
-const port = process.env.PORT || 3000;
-const ACOUSTID_KEY = process.env.ACOUSTID_API_KEY;
+const app           = express();
+const port          = process.env.PORT || 3000;
+const ACOUSTID_KEY  = process.env.ACOUSTID_API_KEY;
 
-// Allow Content-Disposition header in browser
 app.use(cors({
   origin: "*",
-  exposedHeaders: ["Content-Disposition"],
+  exposedHeaders: ["Content-Disposition"]
 }));
 
 const upload = multer({ dest: "uploads/" });
 
-app.get("/", (req, res) => {
-  res.send("MetaTune API is running.");
-});
-
 app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
-  if (!req.file) {
+  if (!req.file) 
     return res.status(400).json({ error: "No file uploaded" });
-  }
 
   const filePath = path.resolve(req.file.path);
-  console.log("📁 Uploaded file:", filePath);
+  console.log("🔍  Received upload, running fpcalc…");
 
   fpcalc(filePath, async (err, result) => {
     if (err) {
@@ -42,84 +35,81 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
     }
 
     const { fingerprint, duration } = result;
-    const lookupURL = `https://api.acoustid.org/v2/lookup`
-                    + `?client=${ACOUSTID_KEY}`
-                    + `&fingerprint=${encodeURIComponent(fingerprint)}`
-                    + `&duration=${duration}`
-                    + `&meta=recordings+releasegroups+releases`;
+    const lookupURL = `https://api.acoustid.org/v2/lookup` +
+                      `?client=${ACOUSTID_KEY}` +
+                      `&fingerprint=${encodeURIComponent(fingerprint)}` +
+                      `&duration=${duration}` +
+                      `&meta=recordings+releasegroups`;
 
     try {
+      console.log("🛰  Querying AcoustID:", lookupURL);
       const acoust = await axios.get(lookupURL);
       const recs   = acoust.data.results?.[0]?.recordings;
-      if (!recs?.length) {
+      if (!recs?.length) 
         return res.status(404).json({ error: "No matching metadata found." });
-      }
 
-      const r       = recs[0];
-      const artist  = r.artists?.[0]?.name            || "Unknown Artist";
-      const title   = r.title                         || "Unknown Title";
-      const album   = r.releasegroups?.[0]?.title     || "Unknown Album";
-      const year    = r.releases?.[0]?.date?.year     || "";
-      const releases = r.releases || [];
+      const r      = recs[0];
+      const artist = r.artists?.[0]?.name           || "Unknown Artist";
+      const title  = r.title                        || "Unknown Title";
+      const album  = r.releasegroups?.[0]?.title    || "Unknown Album";
+      const rgid   = r.releasegroups?.[0]?.id;
 
-      // Try every release until we find cover-art
+      // ——— fetch album art by *release-group* —————————————————————
       let imageBuffer = null;
       let imageMime   = "image/jpeg";
-      for (const rel of releases) {
-        const relId = rel.id;
+
+      if (rgid) {
         try {
-          const imgRes = await axios.get(
-            `https://coverartarchive.org/release/${relId}/front`,
-            { responseType: "arraybuffer" }
+          const coverURL = `https://coverartarchive.org/release-group/${rgid}/front`;
+          console.log("🖼️  Fetching cover art from:", coverURL);
+          const img = await axios.get(coverURL, { responseType: "arraybuffer" });
+          imageBuffer = img.data;
+          imageMime   = img.headers["content-type"];
+          console.log(
+            `✅ Album art fetched (${imageBuffer.length} bytes, ${imageMime})`
           );
-          imageBuffer = imgRes.data;
-          imageMime   = imgRes.headers["content-type"];
-          console.log(`✅ Album art found on release ${relId}`);
-          break;
         } catch (coverErr) {
-          const status = coverErr.response?.status || coverErr.message;
-          console.log(`⛔ No art on release ${relId} (status: ${status})`);
+          console.warn("⚠️ No cover art available for RGID", rgid);
         }
+      } else {
+        console.warn("⚠️ No release-group ID in AcoustID response");
       }
 
-      // Build tags
+      // ——— assemble ID3 tags —————————————————————————————
       const tags = {
         title,
         artist,
         album,
-        year,
         ...(imageBuffer && {
           image: {
             mime:        imageMime,
             type:        { id: 3, name: "front cover" },
             description: "Album Art",
             imageBuffer,
-          },
+          }
         }),
       };
-      console.log("📝 Writing tags:", tags);
+
+      console.log("✏️  Writing ID3 tags:", tags);
       ID3Writer.write(tags, filePath);
 
-      // Read back the tagged file
-      const outputBuffer = fs.readFileSync(filePath);
-      const safeFilename = `${artist} - ${title}`
-        .replace(/[\\/:*?"<>|]/g, "")
-        .trim() + ".mp3";
+      // ——— stream it back with a friendly filename —————————————————
+      const output      = fs.readFileSync(filePath);
+      const safeName    = `${artist} - ${title}`.replace(/[\\\/:*?"<>|]/g, "").trim() + ".mp3";
 
-      // Send with correct headers
-      res.setHeader("Content-Type", "audio/mpeg");
-      res.setHeader("Content-Disposition", `attachment; filename="${safeFilename}"`);
-      return res.send(outputBuffer);
+      res.setHeader("Content-Type",        "audio/mpeg");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
+      res.send(output);
 
-    } catch (e) {
-      console.error("❌ AcoustID or tagging error:", e.response?.data || e.message);
-      return res.status(500).json({
-        error: "Tagging failed",
-        details: e.response?.data || e.message,
-      });
+    } catch (apiErr) {
+      console.error("❌ AcoustID / CoverArt error:", apiErr.response?.data || apiErr.message);
+      return res.status(500).json({ error: "Tagging failed", details: apiErr.response?.data || apiErr.message });
     }
   });
 });
+
+// healthcheck
+app.get("/", (_req, res) => res.send("MetaTune API OK"));
 
 app.listen(port, () => {
   console.log(`🚀 MetaTune API listening on port ${port}`);
