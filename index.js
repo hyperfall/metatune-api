@@ -65,6 +65,7 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
           );
           imageBuffer = img.data;
           imageMime   = img.headers["content-type"];
+      console.log("🧩 Album Art Fetched - Size:", imageBuffer?.length || 0, "Type:", imageMime);
         } catch (_) {
           console.warn("No album art");
         }
