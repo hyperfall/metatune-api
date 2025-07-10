@@ -1,11 +1,14 @@
 # Use an official Node.js LTS base image
 FROM node:18-slim
 
-# Install system dependencies
+# Install system dependencies (includes fpcalc from chromaprint-tools)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/*
+
+# Check if fpcalc installed
+RUN which fpcalc && fpcalc -version
 
 # Create app directory
 WORKDIR /app
@@ -17,8 +20,8 @@ RUN npm install
 # Copy source code
 COPY . .
 
-# Expose the port your app will run on
+# Expose port
 EXPOSE 8080
 
-# Start the server
+# Start server
 CMD ["node", "index.js"]
