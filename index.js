@@ -31,14 +31,18 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
     const { stdout } = await execAsync(`fpcalc -json "${file.path}"`);
     const { duration, fingerprint } = JSON.parse(stdout);
 
-    const acoustIdResponse = await axios.get("https://api.acoustid.org/v2/lookup", {
-      params: {
-        client: process.env.ACOUSTID_API_KEY,
-        meta: "recordings+releasegroups",
-        fingerprint,
-        duration,
-      },
-    });
+const acoustIdResponse = await axios.get("https://api.acoustid.org/v2/lookup", {
+  params: {
+    client: process.env.ACOUSTID_API_KEY,
+    fingerprint,
+    duration,
+    meta: "recordings+releasegroups",
+  },
+  headers: {
+    "User-Agent": "MetaTuneApp/1.0 (contact@example.com)", // Replace with real email for compliance
+  },
+});
+
 
     const match = acoustIdResponse.data.results[0]?.recordings?.[0];
     const tags = {
