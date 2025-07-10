@@ -100,6 +100,11 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
       res.setHeader("Content-Type",        "audio/mpeg");
       res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
       res.send(output);
+      // after res.send(output):
+    fs.unlink(filePath, err => {
+    if (err) console.warn("Could not delete temp file:", filePath);
+    });
+
 
     } catch (apiErr) {
       console.error("❌ AcoustID / CoverArt error:", apiErr.response?.data || apiErr.message);
