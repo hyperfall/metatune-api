@@ -53,20 +53,22 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
     }
 
     // --- Step 2: AcoustID Lookup ---
-    const acoustIdResponse = await axios.get("https://api.acoustid.org/v2/lookup", {
-      params: {
-        client: process.env.ACOUSTID_API_KEY,
-        fingerprint,
-        duration,
-        meta: "recordings+releasegroups",
-      },
-      headers: {
-        "User-Agent": "MetaTuneApp/1.0 (contact@example.com)", // Replace with real contact
-      },
-    });
+   const acoustIdResponse = await axios.get("https://api.acoustid.org/v2/lookup", {
+  params: {
+    client: process.env.ACOUSTID_API_KEY,
+    fingerprint,
+    duration,
+    meta: "recordings+releasegroups",
+  },
+  headers: {
+    "User-Agent": "MetaTuneApp/1.0 (contact@example.com)",
+  },
+});
 
-    // --- Step 3: Extract tags ---
-    const match = acoustIdResponse.data.results?.[0]?.recordings?.[0];
+console.log("AcoustID raw response:", JSON.stringify(acoustIdResponse.data, null, 2));
+
+const match = acoustIdResponse.data.results?.[0]?.recordings?.[0];
+
     const tags = {
       title: match?.title || "Unknown Title",
       artist: match?.artists?.[0]?.name || "Unknown Artist",
