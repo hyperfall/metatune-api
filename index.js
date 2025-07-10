@@ -65,9 +65,11 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
         ID3Writer.write(tags, filePath);
 
         const taggedBuffer = fs.readFileSync(filePath);
-        res.setHeader("Content-Type", "audio/mpeg");
-        res.setHeader("Content-Disposition", 'attachment; filename="tagged.mp3"');
-        res.send(taggedBuffer);
+const safeTitle = (tags.artist + " - " + tags.title).replace(/[\\/:*?"<>|]/g, "").trim();
+res.setHeader("Content-Type", "audio/mpeg");
+res.setHeader("Content-Disposition", `attachment; filename="${safeTitle}.mp3"`);
+res.send(taggedBuffer);
+
       } catch (acoustidError) {
         const errData = acoustidError.response?.data || acoustidError.message;
         console.error("AcoustID API error:", errData);
