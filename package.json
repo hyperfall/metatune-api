@@ -19,6 +19,6 @@
     "multer": "^2.0.1",
     "node-id3": "^0.2.9",
     "fpcalc": "^1.0.0",
-    "music-metadata": "^7.15.4"
+    "music-metadata": "^7.14.1"
   }
 }
