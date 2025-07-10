@@ -1,90 +1,85 @@
 const express = require("express");
-const multer = require("multer");
 const cors = require("cors");
+const multer = require("multer");
+const dotenv = require("dotenv");
 const axios = require("axios");
-const mm = require("music-metadata");
-const NodeID3 = require("node-id3");
-require("dotenv").config();
-const { exec } = require("child_process");
-const util = require("util");
 const fs = require("fs");
+const path = require("path");
+const fpcalc = require("fpcalc");
+const ID3Writer = require("node-id3");
+
+dotenv.config();
 
 const app = express();
-const upload = multer({ dest: "uploads/" });
-const execAsync = util.promisify(exec);
+const port = process.env.PORT || 3000;
+const ACOUSTID_KEY = process.env.ACOUSTID_KEY;
 
-// Enable CORS
-app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
-app.use(express.json());
+const upload = multer({ dest: "uploads/" });
+app.use(cors());
+
+app.get("/", (req, res) => {
+  res.send("MetaTune API is running.");
+});
 
 app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
-  const file = req.file;
-  if (!file) return res.status(400).json({ error: "No file uploaded" });
-
   try {
-    // Step 1: Use fpcalc to get fingerprint and duration
-    const { stdout, stderr } = await execAsync(`fpcalc -json "${file.path}"`);
-    if (stderr) console.warn("⚠️ fpcalc stderr:", stderr);
+    const file = req.file;
 
-    let parsed;
-    try {
-      parsed = JSON.parse(stdout);
-    } catch (err) {
-      return res.status(500).json({
-        error: "Failed to parse fpcalc output",
-        rawOutput: stdout,
-        parseError: err.message,
-      });
+    if (!file) {
+      return res.status(400).json({ error: "No file uploaded" });
     }
 
-    const { fingerprint, duration } = parsed;
-    if (!fingerprint || !duration) {
-      return res.status(500).json({ error: "Incomplete fpcalc data" });
-    }
+    const filePath = path.resolve(file.path);
+    console.log("Uploaded file path:", filePath);
 
-    // Step 2: AcoustID lookup
-    const acoustIdResponse = await axios.get("https://api.acoustid.org/v2/lookup", {
-      params: {
-        client: process.env.ACOUSTID_API_KEY,
-        fingerprint,
-        duration,
-        meta: "recordings+releasegroups",
-      },
-      headers: {
-        "User-Agent": "MetaTuneApp/1.0 (contact@example.com)",
-      },
+    fpcalc(filePath, async (err, result) => {
+      if (err) {
+        console.error("fpcalc error:", err);
+        return res.status(500).json({ error: "Fingerprinting failed", details: err.message });
+      }
+
+      console.log("fpcalc result:", result);
+      const { fingerprint, duration } = result;
+
+      const url = `https://api.acoustid.org/v2/lookup?client=${ACOUSTID_KEY}&fingerprint=${encodeURIComponent(
+        fingerprint
+      )}&duration=${duration}&meta=recordings+releasegroups`;
+
+      try {
+        const response = await axios.get(url);
+        console.log("AcoustID response:", response.data);
+
+        const recordings = response.data.results?.[0]?.recordings;
+        if (!recordings || recordings.length === 0) {
+          return res.status(404).json({ error: "No matching metadata found." });
+        }
+
+        const recording = recordings[0];
+        const tags = {
+          title: recording.title,
+          artist: recording.artists?.[0]?.name || "Unknown Artist",
+          album: recording.releasegroups?.[0]?.title || "Unknown Album",
+        };
+
+        console.log("Writing tags:", tags);
+        ID3Writer.write(tags, filePath);
+
+        const taggedBuffer = fs.readFileSync(filePath);
+        res.setHeader("Content-Type", "audio/mpeg");
+        res.setHeader("Content-Disposition", 'attachment; filename="tagged.mp3"');
+        res.send(taggedBuffer);
+      } catch (acoustidError) {
+        const errData = acoustidError.response?.data || acoustidError.message;
+        console.error("AcoustID API error:", errData);
+        return res.status(400).json({ error: "Tagging failed", details: errData });
+      }
     });
-
-    const match = acoustIdResponse.data?.results?.[0]?.recordings?.[0];
-
-    const tags = {
-      title: match?.title || "Unknown Title",
-      artist: match?.artists?.[0]?.name || "Unknown Artist",
-      album: match?.releasegroups?.[0]?.title || "Unknown Album",
-    };
-
-    // Step 3: Tag the file
-    await NodeID3.write(tags, file.path);
-
-    // Step 4 (Optional): Extract embedded cover art metadata
-    const metadata = await mm.parseFile(file.path);
-    const cover = metadata.common.picture?.[0];
-    let coverBase64 = null;
-    if (cover) {
-      coverBase64 = `data:${cover.format};base64,${cover.data.toString("base64")}`;
-    }
-
-    return res.json({ success: true, tags, cover: coverBase64 });
-  } catch (err) {
-    console.error("🔥 Error tagging file:", err);
-    return res.status(500).json({ error: "Tagging failed", details: err.message });
-  } finally {
-    // Clean up uploaded file
-    if (file?.path) fs.unlink(file.path, () => {});
+  } catch (error) {
+    console.error("Server error:", error);
+    res.status(500).json({ error: "Internal Server Error", details: error.message });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🎧 MetaTune API running on port ${PORT}`);
+app.listen(port, () => {
+  console.log(`MetaTune API running on port ${port}`);
 });
