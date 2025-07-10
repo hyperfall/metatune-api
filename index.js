@@ -53,26 +53,27 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
       const title  = r.title               || "Unknown Title";
       const album  = r.releasegroups?.[0]?.title || "Unknown Album";
       const year   = r.releases?.[0]?.date?.split("-")[0] || "";
-      const relId  = r.releases?.[0]?.id;
+     let imageBuffer = null;
+let imageMime   = "image/jpeg";
 
-      // fetch cover art if available
-      let imageBuffer = null, imageMime = "image/jpeg";
-      console.log("🎯 Recording:", JSON.stringify(r, null, 2));
-console.log("📀 releaseId:", relId);
+if (r.releases?.length) {
+  for (const release of r.releases) {
+    const relId = release.id;
+    try {
+      const img = await axios.get(
+        `https://coverartarchive.org/release/${relId}/front`,
+        { responseType: "arraybuffer" }
+      );
+      imageBuffer = img.data;
+      imageMime   = img.headers["content-type"];
+      console.log("✅ Album art found for release:", relId);
+      break;
+    } catch {
+      console.log("❌ No album art for release:", relId);
+    }
+  }
+}
 
-      if (relId) {
-        try {
-          const img = await axios.get(
-            `https://coverartarchive.org/release/${relId}/front`,
-            { responseType: "arraybuffer" }
-          );
-          imageBuffer = img.data;
-          imageMime   = img.headers["content-type"];
-      console.log("🧩 Album Art Fetched - Size:", imageBuffer?.length || 0, "Type:", imageMime);
-        } catch (_) {
-          console.warn("No album art");
-        }
-      }
 
       // build tags
       const tags = {
