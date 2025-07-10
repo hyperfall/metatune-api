@@ -4,60 +4,36 @@ const multer = require("multer");
 const cors = require("cors");
 const axios = require("axios");
 const NodeID3 = require("node-id3");
-require("dotenv").config();
 const { exec } = require("child_process");
 const util = require("util");
+require("dotenv").config();
 
 const app = express();
 const upload = multer({ dest: "uploads/" });
 const execAsync = util.promisify(exec);
 
-// CORS middleware
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST"],
-}));
-
+app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
 app.use(express.json());
 
-// --- Route Setup ---
 app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: "No file uploaded" });
 
   try {
-    // --- Step 1: Run fpcalc ---
-    const { stdout, stderr } = await execAsync(`fpcalc -json "${file.path}"`);
-    console.log("🔍 fpcalc stdout:\n", stdout);
-    if (stderr) console.warn("⚠️ fpcalc stderr:\n", stderr);
-
-    let duration, fingerprint;
-    try {
-      const parsed = JSON.parse(stdout);
-      duration = parsed.duration;
-      fingerprint = parsed.fingerprint;
-    } catch (parseErr) {
-      console.error("❌ JSON parse error from fpcalc:", parseErr);
-      return res.status(500).json({
-        error: "Failed to parse fpcalc output",
-        rawOutput: stdout,
-        parseError: parseErr.message,
-      });
-    }
+    // Step 1: Extract fingerprint using fpcalc
+    const { stdout } = await execAsync(`fpcalc -json "${file.path}"`);
+    const { duration, fingerprint } = JSON.parse(stdout);
 
     if (!duration || !fingerprint) {
-      return res.status(500).json({
-        error: "fpcalc output incomplete",
-        parsed: { duration, fingerprint },
-      });
+      return res.status(500).json({ error: "Invalid fpcalc output" });
     }
 
-    // --- Step 2: AcoustID Lookup ---
-    const acoustIdResponse = await axios.get("https://api.acoustid.org/v2/lookup", {
+    // Step 2: Lookup AcoustID
+    const acoustIdRes = await axios.get("https://api.acoustid.org/v2/lookup", {
       params: {
         client: process.env.ACOUSTID_API_KEY,
         fingerprint,
-        duration,
+        duration: Math.round(duration),
         meta: "recordings+releasegroups",
       },
       headers: {
@@ -65,30 +41,32 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
       },
     });
 
-    console.log("🎧 AcoustID raw response:", JSON.stringify(acoustIdResponse.data, null, 2));
+    const results = acoustIdRes.data.results;
+    const match = results?.[0]?.recordings?.[0];
 
-    const match = acoustIdResponse.data.results?.[0]?.recordings?.[0];
+    if (!match) {
+      return res.status(200).json({
+        success: false,
+        reason: "No strong metadata match found",
+        acoustidId: results?.[0]?.id,
+        rawResults: results,
+      });
+    }
 
     const tags = {
       title: match?.title || "Unknown Title",
-      artist: match?.artists?.[0]?.name || "Unknown Artist",
-      album: match?.releasegroups?.[0]?.title || "Unknown Album",
+      artist: match?.["artist-credit"]?.[0]?.name || "Unknown Artist",
+      album: match?.["releasegroups"]?.[0]?.title || "Unknown Album",
     };
 
     await NodeID3.write(tags, file.path);
-    return res.json({ success: true, tags });
+
+    res.json({
+      success: true,
+      tags,
+      acoustidId: results?.[0]?.id,
+    });
 
   } catch (err) {
     console.error("🔥 Uncaught Error:", err);
-    return res.status(500).json({
-      error: "Tagging failed",
-      details: err.message,
-    });
-  }
-});
-
-// --- Start server ---
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 MetaTune API running on port ${PORT}`);
-});
+    res.statu
