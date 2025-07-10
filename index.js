@@ -40,4 +40,24 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
       },
     });
 
-    const
+    const match = acoustIdResponse.data.results[0]?.recordings?.[0];
+    const tags = {
+      title: match?.title || "Unknown Title",
+      artist: match?.artists?.[0]?.name || "Unknown Artist",
+      album: match?.releasegroups?.[0]?.title || "Unknown Album",
+    };
+
+    await NodeID3.write(tags, file.path);
+    return res.json({ success: true, tags });
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Tagging failed", details: err.message });
+  }
+});
+
+// --- Start server LAST ---
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`MetaTune API running on port ${PORT}`);
+});
