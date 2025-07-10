@@ -8,11 +8,36 @@ require("dotenv").config();
 
 const app = express();
 const upload = multer({ dest: "uploads/" });
-const PORT = process.env.PORT || 3000; // Railway will inject its own PORT
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
 
-app.use(cors());
+// CORS middleware (important)
+app.use(cors({
+  origin: "*", // or restrict to your frontend origin if you prefer
+  methods: ["GET", "POST"],
+}));
+
 app.use(express.json());
 
+// --- Route Setup ---
+app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+  try {
+    // Run fpcalc to generate fingerprint and duration
+    const { exec } = require("child_process");
+    const util = require("util");
+    const execAsync = util.promisify(exec);
+
+    const { stdout } = await execAsync(`fpcalc -json "${file.path}"`);
+    const { duration, fingerprint } = JSON.parse(stdout);
+
+    const acoustIdResponse = await axios.get("https://api.acoustid.org/v2/lookup", {
+      params: {
+        client: process.env.ACOUSTID_API_KEY,
+        meta: "recordings+releasegroups",
+        fingerprint,
+        duration,
+      },
+    });
+
+    const
