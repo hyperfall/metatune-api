@@ -1,22 +1,24 @@
-FROM node:18
+# Use an official Node.js LTS base image
+FROM node:18-slim
 
-# Install dependencies and Chromaprint (fpcalc)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    chromaprint \
+    libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+# Create app directory
 WORKDIR /app
 
-# Copy app files
-COPY . .
-
-# Install node dependencies
+# Copy package files and install dependencies
+COPY package*.json ./
 RUN npm install
 
-# Expose port (should match your app)
+# Copy source code
+COPY . .
+
+# Expose the port your app will run on
 EXPOSE 8080
 
-# Start server
+# Start the server
 CMD ["node", "index.js"]
