@@ -5,14 +5,15 @@ const fs = require("fs");
 const tmp = require("tmp");
 
 exports.writeTags = async (tags, inputPath) => {
-  const ext = path.extname(inputPath);
+  const ext = path.extname(inputPath) || ".mp3"; // fallback if no extension
   const baseName = path.basename(inputPath, ext);
   const outputDir = path.resolve("wavuploads");
-  const tempOutput = path.join(outputDir, `${baseName}_tagged${ext}`);
 
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
   }
+
+  const tempOutput = path.join(outputDir, `${baseName}_tagged${ext}`);
 
   const metadataArgs = [
     tags.title ? `-metadata title="${tags.title}"` : "",
@@ -38,8 +39,11 @@ exports.writeTags = async (tags, inputPath) => {
 
   try {
     await exec(command);
+
+    // Overwrite original file (optional: you can choose to keep original instead)
     fs.unlinkSync(inputPath);
     fs.renameSync(tempOutput, inputPath);
+
     if (albumArtPath) fs.unlinkSync(albumArtPath);
   } catch (err) {
     if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
