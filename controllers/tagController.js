@@ -11,7 +11,7 @@ const tagReader          = require("../utils/tagReader");
 const MB_BASE    = "https://musicbrainz.org/ws/2";
 const MB_HEADERS = { "User-Agent": "MetaTune/1.0 (you@domain.com)" };
 
-// Keep Unicode letters, numbers, spaces, and hyphens
+// Unicode‐safe cleaner
 const clean = s =>
   (s || "")
     .replace(/[^\p{L}\p{N}\s-]/gu, "")
@@ -24,14 +24,14 @@ async function handleTagging(files) {
   for (const file of files) {
     const original  = file.originalname;
     const inputPath = file.path;
-    console.log(`\n[handleTagging] ➤ Processing "${original}"`);
+    console.log(`\n[handleTagging] ➤ Starting ${original}`);
 
     try {
-      // 1) Fingerprint + duration
+      // 1️⃣ Fingerprint & duration
       const { duration, fingerprint } = await generateFingerprint(inputPath);
-      console.log("  🎵 fingerprint & duration ready");
+      console.log("  🎵 fingerprint ready");
 
-      // 2) AcoustID lookup
+      // 2️⃣ AcoustID lookup
       let rec = null;
       try {
         const ac = await axios.get("https://api.acoustid.org/v2/lookup", {
@@ -49,25 +49,25 @@ async function handleTagging(files) {
           resultsArr.map(r => ({ id: r.id, score: r.score, recs: (r.recordings||[]).length }))
         );
 
-        // Flatten & select best recording
+        // flatten and choose highest‐score recording
         const scored = [];
         for (const r of resultsArr) {
-          (r.recordings || []).forEach(recObj => scored.push({ rec: recObj, score: r.score }));
+          (r.recordings || []).forEach(rObj => scored.push({ rec: rObj, score: r.score }));
         }
         if (scored.length) {
           scored.sort((a, b) => b.score - a.score);
           rec = scored[0].rec;
           console.log("  ✅ chosen recording:", rec.id, "score", scored[0].score);
         } else {
-          console.warn("  ⚠️ no recordings returned");
+          console.warn("  ⚠️ no recordings found in fingerprint results");
         }
       } catch (err) {
-        console.warn("  ⚠️ AcoustID lookup error:", err.message);
+        console.warn("  ⚠️ AcoustID error:", err.message);
       }
 
-      // 3) MB filename fallback
+      // 3️⃣ MB filename fallback if no rec
       if (!rec) {
-        console.log("  🔍 MB fallback search");
+        console.log("  🔍 MB filename fallback");
         const ext      = path.extname(original) || "";
         const nameOnly = original.replace(ext, "");
         let [gT, gA]   = nameOnly.split(" - ");
@@ -81,9 +81,9 @@ async function handleTagging(files) {
             params: { query: `recording:"${gT}" AND artist:"${gA}"`, fmt: "json", limit: 1 },
             headers: MB_HEADERS,
           });
-          const found = sr.data.recordings?.[0];
-          if (found?.id) {
-            const lu = await axios.get(`${MB_BASE}/recording/${found.id}`, {
+          const f = sr.data.recordings?.[0];
+          if (f?.id) {
+            const lu = await axios.get(`${MB_BASE}/recording/${f.id}`, {
               params: { inc: "artists+release-groups+tags", fmt: "json" },
               headers: MB_HEADERS,
             });
@@ -95,7 +95,7 @@ async function handleTagging(files) {
         }
       }
 
-      // 4) Embedded tags fallback
+      // 4️⃣ Read embedded tags
       let embedded = {};
       try {
         embedded = await tagReader(inputPath);
@@ -108,11 +108,11 @@ async function handleTagging(files) {
         console.warn("  ⚠️ tagReader error:", err.message);
       }
 
-      // 5) Merge metadata
-      const title  = rec?.title || embedded.title  || "Unknown Title";
+      // 5️⃣ Merge metadata
+      const title  = rec?.title || embedded.title || "Unknown Title";
       const artist = rec?.["artist-credit"]
         ? rec["artist-credit"].map(a => a.name).join(", ")
-        : (embedded.artist || "Unknown Artist");
+        : embedded.artist || "Unknown Artist";
 
       const groups = rec?.releasegroups || rec?.["release-groups"] || [];
       const rg     = groups[0] || {};
@@ -123,14 +123,14 @@ async function handleTagging(files) {
 
       console.log("  📦 final meta:", { title, artist, album, year, genre });
 
-      // 6) Cover art
+      // 6️⃣ Fetch art or fallback
       let image = null;
       if (rg.id) {
         try {
           image = await fetchAlbumArt(rg.id);
           console.log("  🖼️ fetched art for RG", rg.id);
         } catch (err) {
-          console.warn("  ⚠️ art fetch error:", err.message);
+          console.warn("  ⚠️ fetchAlbumArt error:", err.message);
         }
       }
       if (!image && embedded.image) {
@@ -138,11 +138,11 @@ async function handleTagging(files) {
         console.log("  🎨 using embedded art");
       }
 
-      // 7) Write tags
+      // 7️⃣ Write tags
       await writeTags({ title, artist, album, year, genre, image }, inputPath);
-      console.log("  ✅ writeTags OK");
+      console.log("  ✅ writeTags succeeded");
 
-      // 8) Rename file
+      // 8️⃣ Rename file
       const extOut    = path.extname(original) || ".mp3";
       const finalName = `${clean(artist)} - ${clean(title)}${extOut}`;
       const finalPath = path.join(path.dirname(inputPath), finalName);
@@ -151,7 +151,7 @@ async function handleTagging(files) {
 
       results.push(finalPath);
     } catch (err) {
-      console.error("  ❌ processing error:", original, err);
+      console.error("  ❌ error processing", original, err);
     }
   }
 
@@ -159,29 +159,38 @@ async function handleTagging(files) {
 }
 
 exports.processFile = async (req, res) => {
-  const file = req.file;
-  if (!file) return res.status(400).json({ error: "No file uploaded" });
-  const [out] = await handleTagging([file]);
-  if (!out) return res.status(500).json({ error: "Tagging failed" });
-  res.download(out, path.basename(out), err => {
-    if (err) {
-      console.error("Download error:", err);
-      res.status(500).json({ error: "Download failed" });
-    }
-  });
+  try {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    const [out] = await handleTagging([req.file]);
+    if (!out) return res.status(500).json({ error: "Tagging failed" });
+    res.download(out, path.basename(out), err => {
+      if (err) {
+        console.error("Download error:", err);
+        res.status(500).json({ error: "Download failed" });
+      }
+    });
+  } catch (err) {
+    console.error("processFile error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 };
 
 exports.processBatch = async (req, res) => {
-  const files = req.files || [];
-  if (!files.length) return res.status(400).json({ error: "No files uploaded" });
-  const tagged = await handleTagging(files);
-  if (!tagged.length) return res.status(500).json({ error: "All files failed tagging" });
-  const zipPath = await zipTaggedFiles(tagged);
-  res.download(zipPath, "metatune-output.zip", err => {
-    if (err) {
-      console.error("ZIP download error:", err);
-      return res.status(500).json({ error: "ZIP download failed" });
-    }
-    fs.unlinkSync(zipPath);
-  });
+  try {
+    const files = req.files || [];
+    if (!files.length) return res.status(400).json({ error: "No files uploaded" });
+    const tagged = await handleTagging(files);
+    if (!tagged.length) return res.status(500).json({ error: "All files failed tagging" });
+    const zipPath = await zipTaggedFiles(tagged);
+    res.download(zipPath, "metatune-output.zip", err => {
+      if (err) {
+        console.error("ZIP download error:", err);
+        return res.status(500).json({ error: "ZIP download failed" });
+      }
+      fs.unlinkSync(zipPath);
+    });
+  } catch (err) {
+    console.error("processBatch error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 };
