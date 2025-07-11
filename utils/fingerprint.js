@@ -3,12 +3,13 @@ const exec = util.promisify(require("child_process").exec);
 const path = require("path");
 const fs = require("fs");
 
-const runFpcalc = async (inputPath) => {
+// 🔍 Generate AcoustID fingerprint from any supported audio file
+const generateFingerprint = async (inputPath) => {
   const ext = path.extname(inputPath).toLowerCase();
   const wavPath = inputPath.replace(ext, ".wav");
 
   try {
-    // Convert to WAV if not already .wav
+    // Convert to WAV if necessary
     if (ext !== ".wav") {
       await exec(`ffmpeg -y -i "${inputPath}" -ar 44100 -ac 2 -f wav "${wavPath}"`);
     }
@@ -29,9 +30,9 @@ const runFpcalc = async (inputPath) => {
     };
   } finally {
     if (ext !== ".wav" && fs.existsSync(wavPath)) {
-      fs.unlinkSync(wavPath); // cleanup
+      fs.unlinkSync(wavPath); // Cleanup temporary WAV
     }
   }
 };
 
-module.exports = { generateFingerprint: runFpcalc };
+module.exports = { generateFingerprint };
