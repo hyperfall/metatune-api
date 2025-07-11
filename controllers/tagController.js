@@ -10,12 +10,8 @@ const { zipTaggedFiles } = require("../utils/zipFiles");
 
 const execPromise = util.promisify(exec);
 
-exports.processBatch = async (req, res) => {
-  const files = req.files;
-  if (!files || files.length === 0) {
-    return res.status(400).json({ error: "No files uploaded" });
-  }
-
+// 🔁 Shared tagging logic
+async function handleTagging(files) {
   const taggedFiles = [];
 
   for (const file of files) {
@@ -58,7 +54,7 @@ exports.processBatch = async (req, res) => {
       if (mbid) {
         try {
           image = await fetchAlbumArt(mbid);
-        } catch (err) {
+        } catch {
           console.warn(`⚠️ No album art found for MBID ${mbid}`);
         }
       }
@@ -74,31 +70,51 @@ exports.processBatch = async (req, res) => {
     }
   }
 
+  return taggedFiles;
+}
+
+// 🔹 Single File Upload
+exports.processFile = async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+  const taggedFiles = await handleTagging([file]);
+
+  if (taggedFiles.length === 0) {
+    return res.status(500).json({ error: "Tagging failed" });
+  }
+
+  const filePath = taggedFiles[0];
+  res.download(filePath, path.basename(filePath), err => {
+    if (err) {
+      console.error("❌ Error sending file:", err);
+      res.status(500).json({ error: "Failed to send file" });
+    }
+  });
+};
+
+// 🔹 Batch File Upload
+exports.processBatch = async (req, res) => {
+  const files = req.files;
+  if (!files || files.length === 0) {
+    return res.status(400).json({ error: "No files uploaded" });
+  }
+
+  const taggedFiles = await handleTagging(files);
+
   if (taggedFiles.length === 0) {
     return res.status(500).json({ error: "All files failed tagging" });
   }
 
-  // 🧠 Decide zip or not
-  if (taggedFiles.length === 1) {
-    // Single file – return directly
-    const filePath = taggedFiles[0];
-    res.download(filePath, path.basename(filePath), err => {
-      if (err) {
-        console.error("❌ Error sending file:", err);
-        res.status(500).json({ error: "Failed to send file" });
-      }
-    });
-  } else {
-    // Multiple files – return ZIP
-    const zipPath = await zipTaggedFiles(taggedFiles);
-    res.download(zipPath, "metatune-output.zip", err => {
-      if (err) {
-        console.error("❌ Error sending ZIP:", err);
-        res.status(500).json({ error: "Failed to send ZIP file" });
-      }
+  const zipPath = await zipTaggedFiles(taggedFiles);
 
-      // Cleanup after download
-      fs.unlink(zipPath, () => {});
-    });
-  }
+  res.download(zipPath, "metatune-output.zip", err => {
+    if (err) {
+      console.error("❌ Error sending ZIP:", err);
+      res.status(500).json({ error: "Failed to send ZIP file" });
+    }
+
+    // Clean up ZIP after sending
+    fs.unlink(zipPath, () => {});
+  });
 };
