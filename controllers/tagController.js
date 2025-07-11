@@ -10,28 +10,29 @@ const { zipTaggedFiles } = require("../utils/zipFiles");
 const tagReader          = require("../utils/tagReader");
 
 const execPromise = util.promisify(exec);
+const MB_BASE = "https://musicbrainz.org/ws/2";
+const MB_HEADERS = { "User-Agent": "MetaTune/1.0 (you@domain.com)" };
 
 async function handleTagging(files) {
   const results = [];
 
   for (const file of files) {
-    const inputPath = file.path;
+    const input = file.path;
+    // ─── 1) Determine extension ──────────────────────────────
+    let ext = path.extname(input) || path.extname(file.originalname) || ".mp3";
 
-    // ── 1) Determine extension ──────────────────────────
-    let ext = path.extname(inputPath) || path.extname(file.originalname) || ".mp3";
-
-    // ── 2) Prepare WAV for fingerprinting ───────────────
-    const base     = path.basename(inputPath, path.extname(inputPath));
-    const wavDir   = path.join(__dirname, "..", "wavuploads");
-    const wavPath  = path.join(wavDir, `${base}.wav`);
+    // ─── 2) Prepare WAV ──────────────────────────────────────
+    const base    = path.basename(input, path.extname(input));
+    const wavDir  = path.join(__dirname, "..", "wavuploads");
+    const wavPath = path.join(wavDir, `${base}.wav`);
     if (!fs.existsSync(wavDir)) fs.mkdirSync(wavDir, { recursive: true });
-    await execPromise(`ffmpeg -y -i "${inputPath}" -ar 44100 -ac 2 -f wav "${wavPath}"`);
+    await execPromise(`ffmpeg -y -i "${input}" -ar 44100 -ac 2 -f wav "${wavPath}"`);
 
-    // ── 3) Fingerprint + AcoustID lookup ────────────────
+    // ─── 3) Fingerprint & AcoustID lookup ────────────────────
     let rec = null;
     try {
       const { duration, fingerprint } = await generateFingerprint(wavPath);
-      const acoustRes = await axios.get("https://api.acoustid.org/v2/lookup", {
+      const ac = await axios.get("https://api.acoustid.org/v2/lookup", {
         params: {
           client: process.env.ACOUSTID_API_KEY,
           meta:   "recordings+releasegroups+compress",
@@ -39,49 +40,94 @@ async function handleTagging(files) {
           duration,
         },
       });
-      rec = acoustRes.data.results?.[0]?.recordings?.[0] || null;
-    } catch (err) {
-      console.warn("⚠️ AcoustID lookup failed:", err.message);
+      rec = ac.data.results?.[0]?.recordings?.[0] || null;
+    } catch (e) {
+      console.warn("⚠️ AcoustID lookup failed:", e.message);
     }
 
-    // ── 4) Try to fetch cover-art via MusicBrainz release-group ───
-    let image = null;
-    const releaseGroup = rec?.["release-groups"]?.[0] || null;  // ← no more 'release' var
-    if (releaseGroup?.id) {
+    // ─── 4) Fallback: MusicBrainz search by split filename ───
+    if (!rec) {
+      const nameOnly = file.originalname.replace(ext, "");
+      // split on " - " or the last space to guess title/artist
+      let [guessTitle, guessArtist] = nameOnly.split(" - ");
+      if (!guessArtist) {
+        // if no dash, take first word as title
+        const parts = nameOnly.split(" ");
+        guessTitle = parts[0];
+        guessArtist = parts.slice(1).join(" ");
+      }
+
       try {
-        image = await fetchAlbumArt(releaseGroup.id);
-      } catch (err) {
-        console.warn("⚠️ fetchAlbumArt failed:", err.message);
+        // search recording by both title & artist
+        const sr = await axios.get(`${MB_BASE}/recording`, {
+          params: {
+            query:   `recording:"${guessTitle}" AND artist:"${guessArtist}"`,
+            fmt:     "json",
+            limit:   1
+          },
+          headers: MB_HEADERS
+        });
+        const found = sr.data.recordings?.[0];
+        if (found?.id) {
+          const lu = await axios.get(`${MB_BASE}/recording/${found.id}`, {
+            params: { inc: "artists+release-groups+tags", fmt: "json" },
+            headers: MB_HEADERS
+          });
+          rec = lu.data;
+        }
+      } catch (e) {
+        console.warn("⚠️ MB fallback lookup failed:", e.message);
       }
     }
 
-    // ── 5) Read embedded tags as a last-resort fallback ─────────
-    const embedded = await tagReader(inputPath);
+    // ─── 5) Read embedded tags ─────────────────────────────────
+    const embedded = await tagReader(input);
 
-    // ── 6) Merge metadata (AcoustID → fallback → defaults) ──────
-    const title  = rec?.title 
-      || embedded.title  || "Unknown Title";
+    // ─── 6) Merge metadata ────────────────────────────────────
+    const title  = rec?.title
+      || embedded.title
+      || "Unknown Title";
     const artist = rec?.["artist-credit"]?.map(a => a.name).join(", ")
-      || embedded.artist || "Unknown Artist";
-    const album  = releaseGroup?.title 
-      || embedded.album  || "Unknown Album";
-    const year   = releaseGroup?.["first-release-date"]?.split("-")[0]
-      || embedded.year   || "";
-    const genre  = rec?.tags?.[0]?.name 
-      || embedded.genre  || "";
+      || embedded.artist
+      || "Unknown Artist";
 
-    const tagsObj = { title, artist, album, year, genre, image };
+    const releaseGroup = rec?.["release-groups"]?.[0] || {};
+    const album = releaseGroup.title
+      || embedded.album
+      || "Unknown Album";
 
-    // ── 7) Write tags into the file ───────────────────────────────
-    await writeTags(tagsObj, inputPath);
+    const year = (releaseGroup["first-release-date"]?.split("-")[0])
+      || embedded.year
+      || "";
 
-    // ── 8) Rename file to "Artist - Title.ext" ───────────────────
-    const safe = str => str.replace(/[^\w\s-]/g, "").trim() || "Unknown";
-    const newName = `${safe(artist)} - ${safe(title)}${ext}`;
-    const newPath = path.join(path.dirname(inputPath), newName);
-    fs.renameSync(inputPath, newPath);
+    const genre = rec?.tags?.[0]?.name
+      || embedded.genre
+      || "";
 
-    // ── 9) Cleanup temp WAV ──────────────────────────────────────
+    // ─── 7) Fetch cover-art ───────────────────────────────────
+    let image = null;
+    if (releaseGroup.id) {
+      try {
+        image = await fetchAlbumArt(releaseGroup.id);
+      } catch (e) {
+        console.warn("⚠️ fetchAlbumArt failed:", e.message);
+      }
+    }
+    // if still null, fallback to any embedded image
+    if (!image && embedded.image) {
+      image = embedded.image;
+    }
+
+    // ─── 8) Write tags + art ──────────────────────────────────
+    await writeTags({ title, artist, album, year, genre, image }, input);
+
+    // ─── 9) Rename file ───────────────────────────────────────
+    const clean = s => s.replace(/[^\w\s-]/g, "").trim() || "Unknown";
+    const newName = `${clean(artist)} - ${clean(title)}${ext}`;
+    const newPath = path.join(path.dirname(input), newName);
+    fs.renameSync(input, newPath);
+
+    // ─── 10) Cleanup WAV ──────────────────────────────────────
     fs.unlinkSync(wavPath);
 
     results.push(newPath);
@@ -90,6 +136,7 @@ async function handleTagging(files) {
   return results;
 }
 
+// ─── Single Upload ─────────────────────────────────────────────
 exports.processFile = async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
   const [out] = await handleTagging([req.file]);
@@ -99,6 +146,7 @@ exports.processFile = async (req, res) => {
   });
 };
 
+// ─── Batch Upload ──────────────────────────────────────────────
 exports.processBatch = async (req, res) => {
   const files = req.files || [];
   if (!files.length) return res.status(400).json({ error: "No files uploaded" });
