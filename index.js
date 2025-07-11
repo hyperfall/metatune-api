@@ -15,6 +15,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 const ACOUSTID_KEY = process.env.ACOUSTID_API_KEY;
 
+// Allow browsers to see Content-Disposition
 app.use(cors({
   origin: "*",
   exposedHeaders: ["Content-Disposition"]
@@ -22,9 +23,9 @@ app.use(cors({
 
 const upload = multer({ dest: "uploads/" });
 
-function cleanupTemp(filePath) {
-  fs.unlink(filePath, err => {
-    if (err) console.warn("⚠️ Could not delete temp file:", filePath);
+function cleanupTemp(fp) {
+  fs.unlink(fp, err => {
+    if (err) console.warn("⚠️ Could not delete temp file:", fp);
   });
 }
 
@@ -37,9 +38,9 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
     return res.status(400).json({ error: "No file uploaded" });
   }
   const filePath = path.resolve(req.file.path);
-  console.log("📥 Uploaded file:", filePath);
+  console.log("📥 Uploaded:", filePath);
 
-  fpcalc(filePath, async (fpErr, { fingerprint, duration } = {}) => {
+  fpcalc(filePath, async (fpErr, result = {}) => {
     if (fpErr) {
       cleanupTemp(filePath);
       console.error("❌ fpcalc error:", fpErr);
@@ -49,6 +50,7 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
       });
     }
 
+    const { fingerprint, duration } = result;
     const lookupURL =
       `https://api.acoustid.org/v2/lookup` +
       `?client=${ACOUSTID_KEY}` +
@@ -64,30 +66,48 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
         return res.status(404).json({ error: "No metadata found." });
       }
 
-      const r      = recs[0];
-      const artist = r.artists?.[0]?.name         || "Unknown Artist";
-      const title  = r.title                      || "Unknown Title";
-      const album  = r.releasegroups?.[0]?.title  || "Unknown Album";
-      const year   = r.releases?.[0]?.date?.split("-")[0] || "";
-      // ← **THIS** is the fix: first entry in r.releases
-      const relId  = r.releases?.[0]?.id;
+      const r       = recs[0];
+      const artist  = r.artists?.[0]?.name               || "Unknown Artist";
+      const title   = r.title                            || "Unknown Title";
+      const album   = r.releasegroups?.[0]?.title        || "Unknown Album";
+      const year    = r.releases?.[0]?.date?.split("-")[0]|| "";
+      const rgid    = r.releasegroups?.[0]?.id        || null;
+      const relId   = r.releases?.[0]?.id             || null;
 
+      // Attempt to fetch cover artwork:
       let imageBuffer = null;
       let imageMime   = "image/jpeg";
-      if (relId) {
+
+      if (rgid) {
         try {
-          const imgRes = await axios.get(
-            `https://coverartarchive.org/release/${relId}/front`,
+          const grpRes = await axios.get(
+            `https://coverartarchive.org/release-group/${rgid}/front`,
             { responseType: "arraybuffer" }
           );
-          imageBuffer = Buffer.from(imgRes.data);
-          imageMime   = imgRes.headers["content-type"];
-          console.log(`🖼️  Fetched art (${imageBuffer.length} bytes, ${imageMime})`);
+          imageBuffer = Buffer.from(grpRes.data);
+          imageMime   = grpRes.headers["content-type"];
+          console.log(`🖼️  Got group art: ${imageBuffer.length} bytes, ${imageMime}`);
         } catch (_) {
-          console.warn("⚠️  No album art for release", relId);
+          console.warn(`⚠️  No group‐level art for ${rgid}`);
         }
       }
 
+      // Fallback to release art if no group art:
+      if (!imageBuffer && relId) {
+        try {
+          const relRes = await axios.get(
+            `https://coverartarchive.org/release/${relId}/front`,
+            { responseType: "arraybuffer" }
+          );
+          imageBuffer = Buffer.from(relRes.data);
+          imageMime   = relRes.headers["content-type"];
+          console.log(`🖼️  Got release art: ${imageBuffer.length} bytes, ${imageMime}`);
+        } catch (_) {
+          console.warn(`⚠️  No release‐level art for ${relId}`);
+        }
+      }
+
+      // Build ID3 tags:
       const tags = {
         title,
         artist,
@@ -105,11 +125,13 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
       console.log("📝 Writing tags:", tags);
       ID3Writer.write(tags, filePath);
 
+      // Read back the tagged file
       const output   = fs.readFileSync(filePath);
       const safeName = `${artist} - ${title}`
         .replace(/[\\\/:*?"<>|]/g, "")
         .trim() + ".mp3";
 
+      // Return it with the proper headers
       res.setHeader("Content-Type",        "audio/mpeg");
       res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
       res.send(output);
