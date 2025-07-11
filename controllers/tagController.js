@@ -1,4 +1,7 @@
 // controllers/tagController.js
+console.log("→ loaded ACOUSTID_API_KEY:", process.env.ACOUSTID_API_KEY);
+console.log("→ loaded ACOUSTID_KEY:",     process.env.ACOUSTID_KEY);
+
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
