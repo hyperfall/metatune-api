@@ -1,11 +1,26 @@
-const NodeID3 = require("node-id3");
+const util = require("util");
+const exec = util.promisify(require("child_process").exec);
+const path = require("path");
+const fs = require("fs");
 
-exports.writeTags = (tags, filePath) => {
-  return new Promise((resolve, reject) => {
-    NodeID3.write(tags, filePath, (err) => {
-      if (err) return reject(err);
-      resolve();
-    });
-  });
+exports.writeTags = async (tags, inputPath) => {
+  const ext = path.extname(inputPath);
+  const tempOutput = inputPath.replace(ext, `_tagged${ext}`);
+
+  const metadataArgs = [
+    `-metadata title="${tags.title}"`,
+    `-metadata artist="${tags.artist}"`,
+    `-metadata album="${tags.album}"`
+  ].join(" ");
+
+  const command = `ffmpeg -y -i "${inputPath}" ${metadataArgs} -c copy "${tempOutput}"`;
+
+  try {
+    await exec(command);
+    fs.unlinkSync(inputPath);
+    fs.renameSync(tempOutput, inputPath);
+  } catch (err) {
+    if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
+    throw new Error(`Failed to write tags: ${err.message}`);
+  }
 };
-
