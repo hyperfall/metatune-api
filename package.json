@@ -28,7 +28,8 @@
     "fpcalc": "^1.0.0",
     "multer": "^2.0.1",
     "music-metadata": "^6.3.2",
-    "node-id3": "^0.2.9"
+    "node-id3": "^0.2.9",
+    "tmp": "^0.2.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
