@@ -15,7 +15,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 const ACOUSTID_KEY = process.env.ACOUSTID_API_KEY;
 
-// expose Content-Disposition so the browser can pick up our filename
+// expose Content-Disposition so the client can grab our filename
 app.use(cors({
   origin: "*",
   exposedHeaders: ["Content-Disposition"]
@@ -23,21 +23,19 @@ app.use(cors({
 
 const upload = multer({ dest: "uploads/" });
 function cleanup(fp) {
-  fs.unlink(fp, (err) => {
+  fs.unlink(fp, err => {
     if (err) console.warn("⚠️ could not delete temp file", fp);
   });
 }
 
-app.get("/", (_, res) => {
-  res.send("MetaTune API is up 👍");
-});
+app.get("/", (_, res) => res.send("MetaTune API is running 👍"));
 
 app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "No file uploaded" });
   }
   const filePath = path.resolve(req.file.path);
-  console.log("📥 Received:", filePath);
+  console.log("📥 Received file:", filePath);
 
   fpcalc(filePath, async (fpErr, result = {}) => {
     if (fpErr) {
@@ -62,47 +60,39 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
       const { results } = acoust.data;
       if (!results?.length) {
         cleanup(filePath);
-        return res.status(404).json({ error: "No AcoustID result" });
+        return res.status(404).json({ error: "No AcoustID results" });
       }
 
-      const best = results[0];
-      console.log(`🎯 AcoustID score: ${best.score}`);
-      if (best.score < 0.85) {
+      console.log(`🎯 Top AcoustID score: ${results[0].score.toFixed(3)}`);
+      // If any of the top matches is a multi‐artist recording, prefer that
+      const multiArtistMatch = results
+        .find(r => r.recordings?.[0]?.artists?.length > 1);
+      const chosen = multiArtistMatch || results[0];
+      console.log(`ℹ️ Using match score: ${chosen.score.toFixed(3)}`);
+
+      const rec = chosen.recordings?.[0];
+      if (!rec) {
         cleanup(filePath);
-        return res.status(400).json({
-          error: "Low match score",
-          details: `score ${best.score}`
-        });
+        return res.status(404).json({ error: "No recordings in match" });
       }
 
-      const recs = best.recordings;
-      if (!recs?.length) {
-        cleanup(filePath);
-        return res.status(404).json({ error: "No recordings in result" });
-      }
+      // Basic metadata
+      const artist = rec.artists?.[0]?.name || "Unknown Artist";
+      const title  = rec.title                || "Unknown Title";
 
-      // pull the first recording
-      const r = recs[0];
-      const artist = r.artists?.[0]?.name        || "Unknown Artist";
-      const title  = r.title                     || "Unknown Title";
-
-      //
-      // ─── PICK THE “CORRECT” RELEASE ────────────────────────────────────────
-      //
-      // First try the recording‐level releases[] array:
-      let pickRelease = r.releases?.[0] || null;
-      // if none, fall back to the first release in the first release‐group
-      let groupId    = r.releasegroups?.[0]?.id || null;
+      // Pick the *exact* release if present, otherwise fall back on release-group
+      let pickRelease = rec.releases?.[0] || null;
+      const groupId   = rec.releasegroups?.[0]?.id || null;
       if (!pickRelease && groupId) {
-        pickRelease = r.releasegroups[0].releases?.[0] || null;
+        pickRelease = rec.releasegroups[0].releases?.[0] || null;
       }
 
-      const album  = pickRelease?.title
-                   || r.releasegroups?.[0]?.title
-                   || "Unknown Album";
-      const relId  = pickRelease?.id || null;
+      const album = pickRelease?.title
+                  || rec.releasegroups?.[0]?.title
+                  || "Unknown Album";
+      const relId = pickRelease?.id || null;
 
-      // ─── SAFELY PULL YEAR ───────────────────────────────────────────────────
+      // Safely extract year from either "YYYY-MM-DD" or { year: XXXX }
       let year = "";
       if (pickRelease?.date) {
         if (typeof pickRelease.date === "string") {
@@ -114,9 +104,8 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
 
       console.log("ℹ️ Tag info:", { artist, title, album, year, relId, groupId });
 
-      // ─── FETCH COVER ART ────────────────────────────────────────────────────
+      // Fetch cover art by release ID first...
       let imageBuffer = null, imageMime = "image/jpeg";
-
       if (relId) {
         try {
           const imgRes = await axios.get(
@@ -130,6 +119,7 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
           console.warn("⚠️ No release art for", relId);
         }
       }
+      // …then fall back to release‐group art if release art failed
       if (!imageBuffer && groupId) {
         try {
           const grpRes = await axios.get(
@@ -144,7 +134,7 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
         }
       }
 
-      // ─── WRITE ID3 TAGS ────────────────────────────────────────────────────
+      // Build and write ID3 tags
       const tags = {
         title,
         artist,
@@ -159,20 +149,20 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
           }
         })
       };
-      console.log("📝 Writing tags...", tags);
+      console.log("📝 Writing tags", tags);
       ID3Writer.write(tags, filePath);
 
-      // ─── STREAM BACK TO CLIENT ─────────────────────────────────────────────
-      const out = fs.readFileSync(filePath);
+      // Read back the tagged file and stream it
+      const output   = fs.readFileSync(filePath);
       const safeName = `${artist} - ${title}`
         .replace(/[\\\/:*?"<>|]/g, "")
         .trim() + ".mp3";
 
       res.setHeader("Content-Type",        "audio/mpeg");
       res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
-      res.send(out);
+      res.send(output);
 
-      // ─── CLEANUP ───────────────────────────────────────────────────────────
+      // cleanup temp file
       cleanup(filePath);
 
     } catch (err) {
