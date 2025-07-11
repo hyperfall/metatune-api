@@ -11,7 +11,6 @@ const tagReader          = require("../utils/tagReader");
 const MB_BASE    = "https://musicbrainz.org/ws/2";
 const MB_HEADERS = { "User-Agent": "MetaTune/1.0 (you@domain.com)" };
 
-// Unicode-safe cleaner
 const clean = str =>
   (str || "")
     .replace(/[^\p{L}\p{N}\s-]/gu, "")
@@ -28,47 +27,45 @@ async function handleTagging(files) {
 
     try {
       // 1️⃣ fingerprint & duration
-      const { duration, fingerprint } = await generateFingerprint(inputPath);
+      const { duration: rawDuration, fingerprint } = await generateFingerprint(inputPath);
+      const duration = Math.round(rawDuration);
       console.log(`[handleTagging] fingerprint length: ${fingerprint.length}`);
-      console.log(`[handleTagging] duration: ${duration}`);
+      console.log(`[handleTagging] duration (rounded): ${duration}`);
 
-      // 2️⃣ AcoustID lookup with debug logs
+      // 2️⃣ AcoustID lookup via POST (form-encoded)
       const ACOUSTID_KEY = process.env.ACOUSTID_API_KEY || process.env.ACOUSTID_KEY;
-      console.log(`[handleTagging] loaded ACOUSTID_API_KEY: ${!!process.env.ACOUSTID_API_KEY}`);
-      console.log(`[handleTagging] loaded ACOUSTID_KEY:     ${!!process.env.ACOUSTID_KEY}`);
-      console.log(`[handleTagging] calling AcoustID with client=${ACOUSTID_KEY}`);
+      console.log(`[handleTagging] ▶ ACOUSTID_KEY loaded? ${!!ACOUSTID_KEY}`);
 
       let rec = null;
       try {
-        const ac = await axios.get("https://api.acoustid.org/v2/lookup", {
-          params: {
-            client:      ACOUSTID_KEY,
-            format:      "json",
-            fingerprint,
-            duration,
-            meta:        "recordings+releasegroups+compress",
-          },
-        });
+        const params = new URLSearchParams();
+        params.append("client",      ACOUSTID_KEY);
+        params.append("format",      "json");
+        params.append("fingerprint", fingerprint);
+        params.append("duration",    duration.toString());
+        params.append("meta",        "recordings+releasegroups+compress");
+
+        const ac = await axios.post(
+          "https://api.acoustid.org/v2/lookup",
+          params.toString(),
+          { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+        );
 
         console.log("[handleTagging] AcoustID raw response:", ac.data);
 
         const hits = ac.data.results || [];
         console.log(
           "[handleTagging] 🎯 AcoustID hits:",
-          hits.map(h => ({
-            id:    h.id,
-            score: h.score,
-            recs:  (h.recordings||[]).length
-          }))
+          hits.map(h => ({ id: h.id, score: h.score, recs: (h.recordings||[]).length }))
         );
 
-        // flatten & pick highest-score recording
+        // flatten & pick best
         const scored = [];
         for (const h of hits) {
           (h.recordings || []).forEach(r => scored.push({ rec: r, score: h.score }));
         }
         if (scored.length) {
-          scored.sort((a,b) => b.score - a.score);
+          scored.sort((a,b)=>b.score - a.score);
           rec = scored[0].rec;
           console.log("[handleTagging] ✅ Best fingerprint match:", rec.id, "score", scored[0].score);
         }
@@ -80,7 +77,7 @@ async function handleTagging(files) {
         );
       }
 
-      // 3️⃣ MB filename fallback
+      // 3️⃣ MusicBrainz filename fallback
       if (!rec) {
         console.log("[handleTagging] 🔍 MusicBrainz filename fallback");
         const ext      = path.extname(original) || "";
@@ -93,17 +90,13 @@ async function handleTagging(files) {
         }
         try {
           const sr = await axios.get(`${MB_BASE}/recording`, {
-            params: {
-              query: `recording:"${gTitle}" AND artist:"${gArtist}"`,
-              fmt:   "json",
-              limit: 1,
-            },
+            params: { query:`recording:"${gTitle}" AND artist:"${gArtist}"`, fmt:"json", limit:1 },
             headers: MB_HEADERS,
           });
           const found = sr.data.recordings?.[0];
           if (found?.id) {
             const lu = await axios.get(`${MB_BASE}/recording/${found.id}`, {
-              params: { inc: "artists+release-groups+tags", fmt: "json" },
+              params: { inc:"artists+release-groups+tags", fmt:"json" },
               headers: MB_HEADERS,
             });
             rec = lu.data;
@@ -114,7 +107,7 @@ async function handleTagging(files) {
         }
       }
 
-      // 4️⃣ Read embedded tags
+      // 4️⃣ Embedded tags fallback
       let embedded = {};
       try {
         embedded = await tagReader(inputPath);
@@ -130,19 +123,17 @@ async function handleTagging(files) {
       // 5️⃣ Merge metadata
       const title  = rec?.title || embedded.title || "Unknown Title";
       const artist = rec?.["artist-credit"]
-        ? rec["artist-credit"].map(a => a.name).join(", ")
+        ? rec["artist-credit"].map(a=>a.name).join(", ")
         : embedded.artist || "Unknown Artist";
-
       const groups = rec?.releasegroups || rec?.["release-groups"] || [];
       const rg     = groups[0] || {};
       const album  = rg.title || embedded.album || "Unknown Album";
-      const year   = (rg["first-release-date"] || rg.first_release_date || "")
-                       .split("-")[0] || embedded.year || "";
+      const year   = (rg["first-release-date"]||rg.first_release_date||"").split("-")[0] || embedded.year || "";
       const genre  = rec?.tags?.[0]?.name || embedded.genre || "";
 
       console.log("[handleTagging] 📦 Final metadata:", { title, artist, album, year, genre });
 
-      // 6️⃣ Fetch album art or fallback
+      // 6️⃣ Cover art fetch/fallback
       let image = null;
       if (rg.id) {
         try {
@@ -169,6 +160,7 @@ async function handleTagging(files) {
       console.log("[handleTagging] 🏷️ Renamed to:", finalName);
 
       results.push(finalPath);
+
     } catch (err) {
       console.error("[handleTagging] ❌ Error processing", original, err);
     }
