@@ -5,7 +5,7 @@ const dotenv = require("dotenv");
 const path = require("path");
 
 const { processFile } = require("./controllers/tagController");
-const cleanupUploads = require("./uploads/cleanupUploads");
+const cleanupUploads = require("./utils/cleanupUploads"); // ✅ Corrected path
 
 dotenv.config();
 
