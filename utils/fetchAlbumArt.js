@@ -1,13 +1,15 @@
+// utils/fetchAlbumArt.js
 const axios = require("axios");
 
-exports.fetchAlbumArt = async (mbid) => {
+async function fetchAlbumArt(mbid) {
   try {
-    const response = await axios.get(`https://coverartarchive.org/release-group/${mbid}`);
+    const response = await axios.get(
+      `https://coverartarchive.org/release-group/${mbid}`
+    );
     const front = response.data.images?.find(img => img.front);
     if (!front) throw new Error("No front cover found");
 
     const imageRes = await axios.get(front.image, { responseType: "arraybuffer" });
-
     return {
       mime: "image/jpeg",
       type: { id: 3, name: "front cover" },
@@ -18,4 +20,6 @@ exports.fetchAlbumArt = async (mbid) => {
     console.warn("Album art fetch failed:", err.message);
     return null;
   }
-};
+}
+
+module.exports = fetchAlbumArt;
