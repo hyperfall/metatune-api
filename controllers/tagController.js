@@ -11,7 +11,7 @@ const tagReader          = require("../utils/tagReader");
 const MB_BASE    = "https://musicbrainz.org/ws/2";
 const MB_HEADERS = { "User-Agent": "MetaTune/1.0 (you@domain.com)" };
 
-// Unicode‐safe cleaner: letters, numbers, spaces, hyphens
+// Unicode-safe cleaner: letters, numbers, spaces, hyphens
 const clean = str =>
   (str || "")
     .replace(/[^\p{L}\p{N}\s-]/gu, "")
@@ -37,9 +37,7 @@ async function handleTagging(files) {
       const ACOUSTID_KEY = process.env.ACOUSTID_API_KEY || process.env.ACOUSTID_KEY;
       console.log(`[handleTagging] ▶ ACOUSTID_KEY loaded? ${!!ACOUSTID_KEY}`);
 
-      let rec = null,  
-          acResultId = null;
-
+      let rec = null;
       try {
         const params = new URLSearchParams();
         params.append("client",      ACOUSTID_KEY);
@@ -66,7 +64,7 @@ async function handleTagging(files) {
           }))
         );
 
-        // If recordings were returned, pick the best
+        // flatten & pick highest-score recording if available
         const scored = [];
         for (const h of hits) {
           (h.recordings || []).forEach(r => scored.push({ rec: r, score: h.score }));
@@ -75,16 +73,6 @@ async function handleTagging(files) {
           scored.sort((a,b) => b.score - a.score);
           rec = scored[0].rec;
           console.log("[handleTagging] ✅ Best fingerprint match:", rec.id, "score", scored[0].score);
-        } else if (hits.length) {
-          // No embedded recordings: use the AcoustID result ID to fetch MB recording
-          acResultId = hits[0].id;
-          console.log("[handleTagging] ⚠️ No recordings; falling back to MB lookup via AcoustID result:", acResultId);
-          const mbRec = await axios.get(
-            `${MB_BASE}/recording/${acResultId}`,
-            { params: { inc: "artists+release-groups+tags", fmt: "json" }, headers: MB_HEADERS }
-          );
-          rec = mbRec.data;
-          console.log("[handleTagging] ✅ Fetched MB recording via AcoustID ID:", rec.id);
         }
       } catch (err) {
         console.warn(
@@ -94,7 +82,7 @@ async function handleTagging(files) {
         );
       }
 
-      // 3️⃣ MusicBrainz filename fallback if still no rec
+      // 3️⃣ MusicBrainz filename fallback if no rec from fingerprint
       if (!rec) {
         console.log("[handleTagging] 🔍 MusicBrainz filename fallback");
         const ext      = path.extname(original) || "";
