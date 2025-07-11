@@ -11,6 +11,7 @@ const tagReader          = require("../utils/tagReader");
 const MB_BASE    = "https://musicbrainz.org/ws/2";
 const MB_HEADERS = { "User-Agent": "MetaTune/1.0 (you@domain.com)" };
 
+// Unicode‐safe cleaner: letters, numbers, spaces, hyphens
 const clean = str =>
   (str || "")
     .replace(/[^\p{L}\p{N}\s-]/gu, "")
@@ -32,7 +33,7 @@ async function handleTagging(files) {
       console.log(`[handleTagging] fingerprint length: ${fingerprint.length}`);
       console.log(`[handleTagging] duration (rounded): ${duration}`);
 
-      // 2️⃣ AcoustID lookup via POST (form-encoded)
+      // 2️⃣ AcoustID lookup via POST (form-encoded), full recordings
       const ACOUSTID_KEY = process.env.ACOUSTID_API_KEY || process.env.ACOUSTID_KEY;
       console.log(`[handleTagging] ▶ ACOUSTID_KEY loaded? ${!!ACOUSTID_KEY}`);
 
@@ -43,7 +44,7 @@ async function handleTagging(files) {
         params.append("format",      "json");
         params.append("fingerprint", fingerprint);
         params.append("duration",    duration.toString());
-        params.append("meta",        "recordings+releasegroups+compress");
+        params.append("meta",        "recordings+releasegroups");
 
         const ac = await axios.post(
           "https://api.acoustid.org/v2/lookup",
@@ -59,13 +60,13 @@ async function handleTagging(files) {
           hits.map(h => ({ id: h.id, score: h.score, recs: (h.recordings||[]).length }))
         );
 
-        // flatten & pick best
+        // flatten & pick highest-score recording
         const scored = [];
         for (const h of hits) {
           (h.recordings || []).forEach(r => scored.push({ rec: r, score: h.score }));
         }
         if (scored.length) {
-          scored.sort((a,b)=>b.score - a.score);
+          scored.sort((a,b) => b.score - a.score);
           rec = scored[0].rec;
           console.log("[handleTagging] ✅ Best fingerprint match:", rec.id, "score", scored[0].score);
         }
@@ -90,13 +91,13 @@ async function handleTagging(files) {
         }
         try {
           const sr = await axios.get(`${MB_BASE}/recording`, {
-            params: { query:`recording:"${gTitle}" AND artist:"${gArtist}"`, fmt:"json", limit:1 },
+            params: { query: `recording:"${gTitle}" AND artist:"${gArtist}"`, fmt: "json", limit: 1 },
             headers: MB_HEADERS,
           });
           const found = sr.data.recordings?.[0];
           if (found?.id) {
             const lu = await axios.get(`${MB_BASE}/recording/${found.id}`, {
-              params: { inc:"artists+release-groups+tags", fmt:"json" },
+              params: { inc: "artists+release-groups+tags", fmt: "json" },
               headers: MB_HEADERS,
             });
             rec = lu.data;
@@ -107,7 +108,7 @@ async function handleTagging(files) {
         }
       }
 
-      // 4️⃣ Embedded tags fallback
+      // 4️⃣ Read embedded tags
       let embedded = {};
       try {
         embedded = await tagReader(inputPath);
@@ -123,17 +124,19 @@ async function handleTagging(files) {
       // 5️⃣ Merge metadata
       const title  = rec?.title || embedded.title || "Unknown Title";
       const artist = rec?.["artist-credit"]
-        ? rec["artist-credit"].map(a=>a.name).join(", ")
+        ? rec["artist-credit"].map(a => a.name).join(", ")
         : embedded.artist || "Unknown Artist";
+
       const groups = rec?.releasegroups || rec?.["release-groups"] || [];
       const rg     = groups[0] || {};
       const album  = rg.title || embedded.album || "Unknown Album";
-      const year   = (rg["first-release-date"]||rg.first_release_date||"").split("-")[0] || embedded.year || "";
+      const year   = (rg["first-release-date"] || rg.first_release_date || "")
+                       .split("-")[0] || embedded.year || "";
       const genre  = rec?.tags?.[0]?.name || embedded.genre || "";
 
       console.log("[handleTagging] 📦 Final metadata:", { title, artist, album, year, genre });
 
-      // 6️⃣ Cover art fetch/fallback
+      // 6️⃣ Fetch cover art or fallback
       let image = null;
       if (rg.id) {
         try {
@@ -160,7 +163,6 @@ async function handleTagging(files) {
       console.log("[handleTagging] 🏷️ Renamed to:", finalName);
 
       results.push(finalPath);
-
     } catch (err) {
       console.error("[handleTagging] ❌ Error processing", original, err);
     }
