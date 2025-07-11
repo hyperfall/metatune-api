@@ -6,16 +6,21 @@ const tmp = require("tmp");
 
 exports.writeTags = async (tags, inputPath) => {
   const ext = path.extname(inputPath);
-  const tempOutput = inputPath.replace(ext, `_tagged${ext}`);
+  const baseName = path.basename(inputPath, ext);
+  const outputDir = path.resolve("wavuploads");
+  const tempOutput = path.join(outputDir, `${baseName}_tagged${ext}`);
 
-  // Basic metadata fields
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
   const metadataArgs = [
     tags.title ? `-metadata title="${tags.title}"` : "",
     tags.artist ? `-metadata artist="${tags.artist}"` : "",
     tags.album ? `-metadata album="${tags.album}"` : "",
     tags.genre ? `-metadata genre="${tags.genre}"` : "",
     tags.year ? `-metadata date="${tags.year}"` : "",
-  ].filter(Boolean); // remove empty entries
+  ].filter(Boolean);
 
   let albumArtPath = null;
 
