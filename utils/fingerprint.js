@@ -4,24 +4,49 @@ const fs = require("fs");
 const path = require("path");
 const exec = util.promisify(require("child_process").exec);
 
-// 🧠 In-memory cache: { hash: { duration, fingerprint } }
-const fingerprintCache = {};
+const CACHE_PATH = path.join(__dirname, "..", "cache", "fingerprintCache.json");
 
-// 🔒 Generate SHA256 hash of file
+let fingerprintCache = {};
+
+// 🔁 Load cache from disk
+const loadCache = () => {
+  try {
+    if (fs.existsSync(CACHE_PATH)) {
+      const raw = fs.readFileSync(CACHE_PATH, "utf-8");
+      fingerprintCache = JSON.parse(raw || "{}");
+    }
+  } catch (err) {
+    console.error("⚠️ Failed to load fingerprint cache:", err);
+    fingerprintCache = {};
+  }
+};
+
+// 💾 Save cache to disk
+const saveCache = () => {
+  try {
+    fs.writeFileSync(CACHE_PATH, JSON.stringify(fingerprintCache, null, 2));
+  } catch (err) {
+    console.error("❌ Failed to save fingerprint cache:", err);
+  }
+};
+
+// 🔒 Generate SHA256 hash of file contents
 const hashFile = (filePath) => {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash("sha256");
     const stream = fs.createReadStream(filePath);
-
-    stream.on("data", data => hash.update(data));
+    stream.on("data", chunk => hash.update(chunk));
     stream.on("end", () => resolve(hash.digest("hex")));
     stream.on("error", reject);
   });
 };
 
-// 🔍 Generate fingerprint using fpcalc (with cache)
+// 🔍 Main fingerprint function
 const generateFingerprint = async (inputPath) => {
+  if (!Object.keys(fingerprintCache).length) loadCache();
+
   const fileHash = await hashFile(inputPath);
+
   if (fingerprintCache[fileHash]) {
     return fingerprintCache[fileHash];
   }
@@ -49,12 +74,13 @@ const generateFingerprint = async (inputPath) => {
       fingerprint: fingerprintMatch[1],
     };
 
-    fingerprintCache[fileHash] = result; // ⚡ Cache the result
+    fingerprintCache[fileHash] = result;
+    saveCache(); // persist
 
     return result;
   } finally {
     if (ext !== ".wav" && fs.existsSync(wavPath)) {
-      fs.unlinkSync(wavPath); // Clean temp WAV
+      fs.unlinkSync(wavPath);
     }
   }
 };
