@@ -16,6 +16,7 @@ async function handleTagging(files) {
 
   for (const file of files) {
     const inputFilePath = file.path;
+    const ext = path.extname(inputFilePath);
     const filename = path.basename(inputFilePath);
     const wavDir = path.join(__dirname, "..", "wavuploads");
     const wavFilePath = path.join(wavDir, `${filename}.wav`);
@@ -23,6 +24,7 @@ async function handleTagging(files) {
     try {
       if (!fs.existsSync(wavDir)) fs.mkdirSync(wavDir, { recursive: true });
 
+      // Convert input to .wav for fingerprinting
       await new Promise((resolve, reject) => {
         const cmd = `ffmpeg -y -i "${inputFilePath}" -ar 44100 -ac 2 -f wav "${wavFilePath}"`;
         exec(cmd, (error, stdout, stderr) => {
@@ -31,8 +33,10 @@ async function handleTagging(files) {
         });
       });
 
+      // Generate fingerprint
       const { duration, fingerprint } = await generateFingerprint(wavFilePath);
 
+      // AcoustID lookup
       const response = await axios.get("https://api.acoustid.org/v2/lookup", {
         params: {
           client: process.env.ACOUSTID_API_KEY,
@@ -49,6 +53,7 @@ async function handleTagging(files) {
       const year = match?.releasegroups?.[0]?.first_release_date?.split("-")[0] || "";
       const genre = match?.tags?.[0]?.name || "Unknown Genre";
 
+      // Fetch album art
       let image = null;
       const mbid = match?.releasegroups?.[0]?.id;
       if (mbid) {
@@ -61,8 +66,17 @@ async function handleTagging(files) {
 
       const tags = { title, artist, album, year, genre, image };
 
+      // Write tags
       await writeTags(tags, inputFilePath);
-      taggedFiles.push(inputFilePath);
+
+      // Rename file using metadata
+      const safeArtist = artist.replace(/[^\w\s-]/g, "").trim();
+      const safeTitle = title.replace(/[^\w\s-]/g, "").trim();
+      const newFilename = `${safeArtist} - ${safeTitle}${ext}`;
+      const newFilePath = path.join(path.dirname(inputFilePath), newFilename);
+
+      fs.renameSync(inputFilePath, newFilePath);
+      taggedFiles.push(newFilePath);
 
       fs.unlink(wavFilePath, () => {});
     } catch (err) {
