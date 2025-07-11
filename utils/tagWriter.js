@@ -1,3 +1,4 @@
+// utils/tagWriter.js
 const util = require("util");
 const exec = util.promisify(require("child_process").exec);
 const path = require("path");
@@ -5,49 +6,54 @@ const fs = require("fs");
 const tmp = require("tmp");
 
 exports.writeTags = async (tags, inputPath) => {
-  const ext = path.extname(inputPath) || ".mp3"; // fallback if no extension
+  // 1) Prepare
+  const ext      = path.extname(inputPath) || ".mp3";
   const baseName = path.basename(inputPath, ext);
-  const outputDir = path.resolve("wavuploads");
+  const tmpDir   = path.resolve("wavuploads");
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
+  const outputPath = path.join(tmpDir, `${baseName}_tagged${ext}`);
+
+  // 2) Build metadata args
+  const metaArgs = [];
+  if (tags.title)  metaArgs.push(`-metadata title="${tags.title}"`);
+  if (tags.artist) metaArgs.push(`-metadata artist="${tags.artist}"`);
+  if (tags.album)  metaArgs.push(`-metadata album="${tags.album}"`);
+  if (tags.genre)  metaArgs.push(`-metadata genre="${tags.genre}"`);
+  if (tags.year)   metaArgs.push(`-metadata date="${tags.year}"`);
+
+  // 3) Prepare cover art if present
+  let artPath = null;
+  if (tags.image?.imageBuffer) {
+    const imgExt   = tags.image.mime === "image/png" ? ".png" : ".jpg";
+    const tmpImage = tmp.fileSync({ postfix: imgExt });
+    fs.writeFileSync(tmpImage.name, tags.image.imageBuffer);
+    artPath = tmpImage.name;
   }
 
-  const tempOutput = path.join(outputDir, `${baseName}_tagged${ext}`);
-
-  const metadataArgs = [
-    tags.title ? `-metadata title="${tags.title}"` : "",
-    tags.artist ? `-metadata artist="${tags.artist}"` : "",
-    tags.album ? `-metadata album="${tags.album}"` : "",
-    tags.genre ? `-metadata genre="${tags.genre}"` : "",
-    tags.year ? `-metadata date="${tags.year}"` : "",
-  ].filter(Boolean);
-
-  let albumArtPath = null;
-
-  if (tags.image && tags.image.imageBuffer) {
-    const tempImage = tmp.fileSync({
-      postfix: tags.image.mime === "image/png" ? ".png" : ".jpg",
-    });
-    fs.writeFileSync(tempImage.name, tags.image.imageBuffer);
-    albumArtPath = tempImage.name;
+  // 4) ffmpeg command
+  //    -id3v2_version 3 + write_id3v1 ensures broad MP3 compatibility
+  //    -map 0 copies all streams from input; -map 1 attaches the pic
+  let cmd = `ffmpeg -y -loglevel error -i "${inputPath}" `;
+  if (artPath) {
+    cmd += `-i "${artPath}" -map 0 -map 1 `;
+    cmd += `-metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" `;
   }
-
-  const command = albumArtPath
-    ? `ffmpeg -y -i "${inputPath}" -i "${albumArtPath}" ${metadataArgs.join(" ")} -map 0 -map 1 -c copy -disposition:v:1 attached_pic "${tempOutput}"`
-    : `ffmpeg -y -i "${inputPath}" ${metadataArgs.join(" ")} -c copy "${tempOutput}"`;
+  cmd += metaArgs.join(" ") + " ";
+  cmd += `-id3v2_version 3 -write_id3v1 1 -c copy "${outputPath}"`;
 
   try {
-    await exec(command);
+    // 5) Run & replace
+    await exec(cmd);
 
-    // Overwrite original file (optional: you can choose to keep original instead)
-    fs.unlinkSync(inputPath);
-    fs.renameSync(tempOutput, inputPath);
+    fs.unlinkSync(inputPath);            // remove old file
+    fs.renameSync(outputPath, inputPath); // move new over it
 
-    if (albumArtPath) fs.unlinkSync(albumArtPath);
+    if (artPath) fs.unlinkSync(artPath);
   } catch (err) {
-    if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
-    if (albumArtPath && fs.existsSync(albumArtPath)) fs.unlinkSync(albumArtPath);
+    // Cleanup on error
+    if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    if (artPath && fs.existsSync(artPath)) fs.unlinkSync(artPath);
     throw new Error(`Failed to write tags: ${err.message}`);
   }
 };
