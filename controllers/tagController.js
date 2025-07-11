@@ -67,7 +67,7 @@ exports.processFile = async (req, res) => {
     await writeTags(tags, inputFilePath);
 
     // Zip the uploads/ folder
-    const zipPath = await zipTaggedFiles("uploads");
+    const zipPath = await zipTaggedFiles([inputFilePath]);
 
     // Send the zip file as a download
     res.download(zipPath, "metatune-output.zip", (err) => {
