@@ -14,19 +14,27 @@ const execPromise = util.promisify(exec);
 const MB_BASE = "https://musicbrainz.org/ws/2";
 const MB_HEADERS = { "User-Agent": "MetaTune/1.0 (you@domain.com)" };
 
+// Unicode-aware cleaner: keeps letters (all scripts), numbers, spaces and dashes
+const clean = s =>
+  (s || "")
+    .replace(/[^\p{L}\p{N}\s-]/gu, "")  // strip unwanted
+    .replace(/\s{2,}/g, " ")            // collapse multiple spaces
+    .trim() || "Unknown";
+
 async function handleTagging(files) {
   const results = [];
 
   for (const file of files) {
     const original = file.originalname;
     const inputPath = file.path;
-    console.log(`\n[handleTagging] Starting: ${original}`);
 
+    console.log(`\n[handleTagging] Starting: ${original}`);
     try {
       // 1️⃣ Determine extension
-      let ext = path.extname(original) || path.extname(inputPath) || ".mp3";
+      let ext = path.extname(original);
+      if (!ext) ext = path.extname(inputPath) || ".mp3";
 
-      // 2️⃣ Make WAV for fingerprint
+      // 2️⃣ Convert to WAV for fingerprinting
       const base    = path.basename(inputPath, path.extname(inputPath));
       const wavDir  = path.join(__dirname, "..", "wavuploads");
       const wavPath = path.join(wavDir, `${base}.wav`);
@@ -43,8 +51,8 @@ async function handleTagging(files) {
             client: process.env.ACOUSTID_API_KEY,
             meta:   "recordings+releasegroups+compress",
             fingerprint,
-            duration,
-          },
+            duration
+          }
         });
         rec = ac.data.results?.[0]?.recordings?.[0] || null;
         console.log(`[handleTagging] → AcoustID rec: ${rec?.id || "none"}`);
@@ -52,7 +60,7 @@ async function handleTagging(files) {
         console.warn(`[handleTagging] → AcoustID failed:`, err.message);
       }
 
-      // 4️⃣ Fallback MB search by filename if no rec at all
+      // 4️⃣ Fallback MB search by filename
       if (!rec) {
         console.log(`[handleTagging] → No AcoustID; trying MB search`);
         const nameOnly = original.replace(ext, "");
@@ -71,9 +79,9 @@ async function handleTagging(files) {
             },
             headers: MB_HEADERS
           });
-          const fd = sr.data.recordings?.[0];
-          if (fd?.id) {
-            const lu = await axios.get(`${MB_BASE}/recording/${fd.id}`, {
+          const found = sr.data.recordings?.[0];
+          if (found?.id) {
+            const lu = await axios.get(`${MB_BASE}/recording/${found.id}`, {
               params: { inc: "artists+release-groups+tags", fmt: "json" },
               headers: MB_HEADERS
             });
@@ -96,23 +104,26 @@ async function handleTagging(files) {
         console.warn(`[handleTagging] → tagReader error:`, err.message);
       }
 
-      // 6️⃣ Merge metadata
-      // Always trust recording if we have one:
-      const title  = rec?.title             || embedded.title  || "Unknown Title";
-      const artist = rec?.["artist-credit"]?.map(a => a.name).join(", ")
-                         || embedded.artist || "Unknown Artist";
+      // 6️⃣ Merge metadata (title/artist always from rec if present)
+      const title  = rec?.title
+        ? rec.title
+        : (embedded.title || "Unknown Title");
+
+      const artist = rec?.["artist-credit"]
+        ? rec["artist-credit"].map(a => a.name).join(", ")
+        : (embedded.artist || "Unknown Artist");
 
       // Album/year/genre via release-group
       const groups = rec?.releasegroups || rec?.["release-groups"] || [];
       const rg     = groups[0] || {};
-      const album  = rg.title            || embedded.album  || "Unknown Album";
-      const year   = (rg["first-release-date"] || rg.first_release_date || "").split("-")[0]
-                         || embedded.year   || "";
+      const album  = rg.title || embedded.album || "Unknown Album";
+      const year   = (rg["first-release-date"] || rg.first_release_date || "")
+                       .split("-")[0] || embedded.year || "";
       const genre  = rec?.tags?.[0]?.name || embedded.genre || "";
 
       console.log(`[handleTagging] → Final meta:`, { title, artist, album, year, genre });
 
-      // 7️⃣ Fetch cover art if we have a real MB release-group
+      // 7️⃣ Fetch cover art if valid release-group, else embed
       let image = null;
       if (rg.id) {
         try {
@@ -122,18 +133,16 @@ async function handleTagging(files) {
           console.warn(`[handleTagging] → art fetch failed:`, err.message);
         }
       }
-      // fallback to embedded if no MB art
       if (!image && embedded.image) {
         image = embedded.image;
-        console.log(`[handleTagging] → using embedded art`);
+        console.log(`[handleTagging] → falling back to embedded art`);
       }
 
       // 8️⃣ Write tags + art
       await writeTags({ title, artist, album, year, genre, image }, inputPath);
       console.log(`[handleTagging] → writeTags OK`);
 
-      // 9️⃣ Rename file
-      const clean = s => s.replace(/[^\w\s-]/g, "").trim() || "Unknown";
+      // 9️⃣ Rename file using unicode-safe clean
       const finalName = `${clean(artist)} - ${clean(title)}${ext}`;
       const finalPath = path.join(path.dirname(inputPath), finalName);
       fs.renameSync(inputPath, finalPath);
