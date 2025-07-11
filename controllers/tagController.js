@@ -11,87 +11,99 @@ const { zipTaggedFiles } = require("../utils/zipFiles");
 const tagReader          = require("../utils/tagReader");
 
 const execPromise = util.promisify(exec);
+const MB_BASE = "https://musicbrainz.org/ws/2";
+const MB_HEADERS = { "User-Agent": "MetaTune/1.0 (your@email)" };
 
 async function handleTagging(files) {
   const results = [];
 
   for (const file of files) {
-    const inputPath = file.path;
-    // 1) Determine extension
-    let ext = path.extname(inputPath);
-    if (!ext) ext = path.extname(file.originalname) || ".mp3";
-
-    // 2) Convert to WAV for fingerprinting
-    const base = path.basename(inputPath, path.extname(inputPath));
+    const input = file.path;
+    let ext = path.extname(input) || path.extname(file.originalname) || ".mp3";
+    const base = path.basename(input, path.extname(input));
     const wavDir = path.join(__dirname, "..", "wavuploads");
-    const wavPath = path.join(wavDir, `${base}.wav`);
+    const wav = path.join(wavDir, `${base}.wav`);
     if (!fs.existsSync(wavDir)) fs.mkdirSync(wavDir, { recursive: true });
-    await execPromise(`ffmpeg -y -i "${inputPath}" -ar 44100 -ac 2 -f wav "${wavPath}"`);
+    await execPromise(`ffmpeg -y -i "${input}" -ar 44100 -ac 2 -f wav "${wav}"`);
 
-    // 3) Fingerprint + AcoustID lookup (with releasegroups)
-    let match = null;
+    // 1) AcoustID → MusicBrainz lookup
+    let rec = null;
     try {
-      const { duration, fingerprint } = await generateFingerprint(wavPath);
-      const acoustRes = await axios.get("https://api.acoustid.org/v2/lookup", {
+      const { duration, fingerprint } = await generateFingerprint(wav);
+      const ac = await axios.get("https://api.acoustid.org/v2/lookup", {
         params: {
           client: process.env.ACOUSTID_API_KEY,
-          meta: "recordings+releasegroups+compress",
+          meta: "recordings+releasegroups",
           fingerprint,
           duration,
-        },
+        }
       });
-      match = acoustRes.data.results?.[0]?.recordings?.[0] || null;
-    } catch (err) {
-      console.warn("⚠️ AcoustID lookup failed:", err.message);
+      rec = ac.data.results?.[0]?.recordings?.[0] || null;
+    } catch (e) {
+      console.warn("⚠️ AcoustID lookup failed:", e.message);
     }
 
-    // 4) Fetch cover-art via MusicBrainz release-group
-    let image = null;
-    const rgid = match?.releasegroups?.[0]?.id;
-    if (rgid) {
+    // 2) Fallback: MusicBrainz search by filename
+    if (!rec) {
+      const titleGuess = file.originalname.replace(path.extname(file.originalname), "");
       try {
-        image = await fetchAlbumArt(rgid);
-      } catch (err) {
-        console.warn("⚠️ fetchAlbumArt failed:", err.message);
+        const sr = await axios.get(`${MB_BASE}/recording`, {
+          params: { query: `recording:"${titleGuess}"`, fmt: "json", limit: 1 },
+          headers: MB_HEADERS
+        });
+        const found = sr.data.recordings?.[0];
+        if (found?.id) {
+          const lu = await axios.get(`${MB_BASE}/recording/${found.id}`, {
+            params: { inc: "artists+release-groups+tags", fmt: "json" },
+            headers: MB_HEADERS
+          });
+          rec = lu.data;
+        }
+      } catch (e) {
+        console.warn("⚠️ MB search fallback failed:", e.message);
       }
     }
 
-    // 5) Embedded tag fallback
-    const embedded = await tagReader(inputPath);
+    // 3) Embedded-tag fallback
+    const embedded = await tagReader(input);
 
-    // 6) Merge metadata
-    const title  = match?.title
-      || embedded.title
+    // 4) Pick metadata
+    const title  = rec?.title  
+      || embedded.title  
       || "Unknown Title";
-    const artist = match?.artists?.[0]?.name
-      || embedded.artist
+    const artist = rec?.["artist-credit"]?.map(a => a.name).join(", ")  
+      || embedded.artist  
       || "Unknown Artist";
-    const album  = match?.releasegroups?.[0]?.title
-      || embedded.album
+    const album  = rec?.["release-groups"]?.[0]?.title  
+      || embedded.album  
       || "Unknown Album";
-    const year   = match?.releasegroups?.[0]?.first_release_date?.split("-")[0]
-      || embedded.year
+    const year   = rec?.["release-groups"]?.[0]?.first-release-date?.split("-")[0]  
+      || embedded.year  
       || "";
-    const genre  = match?.tags?.[0]?.name
-      || embedded.genre
+    const genre  = rec?.tags?.[0]?.name  
+      || embedded.genre  
       || "";
-    const cover  = image
-      || embedded.image
+    
+    // 5) Album art via improved fetchAlbumArt
+    const rgid = rec?.["release-groups"]?.[0]?.id  
+      || embedded.image?.mbid  
       || null;
+    let image = null;
+    if (rgid) {
+      image = await fetchAlbumArt(rgid);
+    }
 
-    const tagsObj = { title, artist, album, year, genre, image: cover };
+    // 6) Write tags + art
+    await writeTags({ title, artist, album, year, genre, image }, input);
 
-    // 7) Write tags into file
-    await writeTags(tagsObj, inputPath);
+    // 7) Rename to "Artist - Title.ext"
+    const clean = s => s.replace(/[^\w\s-]/g, "").trim() || "Unknown";
+    const newName = `${clean(artist)} - ${clean(title)}${ext}`;
+    const newPath = path.join(path.dirname(input), newName);
+    fs.renameSync(input, newPath);
 
-    // 8) Rename file to "Artist - Title.ext"
-    const safe = str => str.replace(/[^\w\s-]/g, "").trim() || "Unknown";
-    const newName = `${safe(artist)} - ${safe(title)}${ext}`;
-    const newPath = path.join(path.dirname(inputPath), newName);
-    fs.renameSync(inputPath, newPath);
-
-    // 9) Cleanup WAV
-    fs.unlinkSync(wavPath);
+    // 8) Cleanup WAV
+    fs.unlinkSync(wav);
 
     results.push(newPath);
   }
@@ -99,7 +111,6 @@ async function handleTagging(files) {
   return results;
 }
 
-// Single upload
 exports.processFile = async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
   const [out] = await handleTagging([req.file]);
@@ -109,7 +120,6 @@ exports.processFile = async (req, res) => {
   });
 };
 
-// Batch upload
 exports.processBatch = async (req, res) => {
   const files = req.files || [];
   if (!files.length) return res.status(400).json({ error: "No files uploaded" });
