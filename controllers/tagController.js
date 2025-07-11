@@ -11,7 +11,7 @@ const tagReader          = require("../utils/tagReader");
 const MB_BASE    = "https://musicbrainz.org/ws/2";
 const MB_HEADERS = { "User-Agent": "MetaTune/1.0 (you@domain.com)" };
 
-// Keeps Unicode letters, numbers, spaces, and hyphens
+// Unicode‐safe cleaner
 const clean = s =>
   (s || "")
     .replace(/[^\p{L}\p{N}\s-]/gu, "")
@@ -27,7 +27,7 @@ async function handleTagging(files) {
     console.log(`\n[handleTagging] ➤ ${original}`);
 
     try {
-      // 1️⃣ Generate fingerprint & duration
+      // 1️⃣ Fingerprint & duration
       const { duration, fingerprint } = await generateFingerprint(inputPath);
       console.log("  🎵 Fingerprint & duration obtained");
 
@@ -46,28 +46,26 @@ async function handleTagging(files) {
         const resultsArr = ac.data.results || [];
         console.log(
           "  🎯 AcoustID results:",
-          resultsArr.map(r => ({ id: r.id, score: r.score, count: (r.recordings||[]).length }))
+          resultsArr.map(r => ({ id: r.id, score: r.score, recs: (r.recordings||[]).length }))
         );
 
-        // Flatten all recordings with their parent score
+        // Flatten & choose highest-score recording
         const scored = [];
         for (const r of resultsArr) {
-          (r.recordings || []).forEach(recObj => scored.push({ rec: recObj, score: r.score }));
+          (r.recordings || []).forEach(rObj => scored.push({ rec: rObj, score: r.score }));
         }
-
         if (scored.length) {
-          // Pick the highest‐score recording
           scored.sort((a, b) => b.score - a.score);
           rec = scored[0].rec;
           console.log("  ✅ Selected recording:", rec.id, "score", scored[0].score);
         } else {
-          console.warn("  ⚠️ No recordings returned by AcoustID");
+          console.warn("  ⚠️ No fingerprint recordings returned");
         }
       } catch (err) {
         console.warn("  ⚠️ AcoustID lookup failed:", err.message);
       }
 
-      // 3️⃣ Fallback: MusicBrainz filename search if no rec
+      // 3️⃣ MB fallback by filename if no rec
       if (!rec) {
         console.log("  🔍 MusicBrainz filename fallback");
         const ext      = path.extname(original) || "";
@@ -78,10 +76,13 @@ async function handleTagging(files) {
           gTitle = parts.shift();
           gArtist = parts.join(" ");
         }
-
         try {
           const sr = await axios.get(`${MB_BASE}/recording`, {
-            params: { query: `recording:"${gTitle}" AND artist:"${gArtist}"`, fmt: "json", limit: 1 },
+            params: {
+              query: `recording:"${gTitle}" AND artist:"${gArtist}"`,
+              fmt:   "json",
+              limit: 1,
+            },
             headers: MB_HEADERS,
           });
           const found = sr.data.recordings?.[0];
@@ -91,14 +92,14 @@ async function handleTagging(files) {
               headers: MB_HEADERS,
             });
             rec = lu.data;
-            console.log("  ✅ MusicBrainz fallback recording:", rec.id);
+            console.log("  ✅ MB fallback recording:", rec.id);
           }
         } catch (err) {
-          console.warn("  ⚠️ MusicBrainz fallback failed:", err.message);
+          console.warn("  ⚠️ MB fallback failed:", err.message);
         }
       }
 
-      // 4️⃣ Read embedded tags
+      // 4️⃣ Embedded tags
       let embedded = {};
       try {
         embedded = await tagReader(inputPath);
@@ -112,7 +113,7 @@ async function handleTagging(files) {
       }
 
       // 5️⃣ Merge metadata
-      const title  = rec?.title || embedded.title || "Unknown Title";
+      const title  = rec?.title || embedded.title  || "Unknown Title";
       const artist = rec?.["artist-credit"]
         ? rec["artist-credit"].map(a => a.name).join(", ")
         : embedded.artist || "Unknown Artist";
@@ -126,26 +127,26 @@ async function handleTagging(files) {
 
       console.log("  📦 Final metadata:", { title, artist, album, year, genre });
 
-      // 6️⃣ Fetch album art (or fallback to embedded)
+      // 6️⃣ Fetch or fallback album art
       let image = null;
       if (rg.id) {
         try {
           image = await fetchAlbumArt(rg.id);
-          console.log("  🖼️ Fetched art for release-group:", rg.id);
+          console.log("  🖼️ Fetched art for RG", rg.id);
         } catch (err) {
           console.warn("  ⚠️ fetchAlbumArt failed:", err.message);
         }
       }
       if (!image && embedded.image) {
         image = embedded.image;
-        console.log("  🎨 Falling back to embedded art");
+        console.log("  🎨 Using embedded art");
       }
 
       // 7️⃣ Write tags + art
       await writeTags({ title, artist, album, year, genre, image }, inputPath);
-      console.log("  ✅ Tags & cover art written");
+      console.log("  ✅ Tags & art written");
 
-      // 8️⃣ Rename file to “Artist - Title.ext”
+      // 8️⃣ Rename file
       const outExt    = path.extname(original) || ".mp3";
       const finalName = `${clean(artist)} - ${clean(title)}${outExt}`;
       const finalPath = path.join(path.dirname(inputPath), finalName);
@@ -154,7 +155,7 @@ async function handleTagging(files) {
 
       results.push(finalPath);
     } catch (err) {
-      console.error("  ❌ Error processing file:", original, err);
+      console.error("  ❌ Error processing:", original, err);
     }
   }
 
