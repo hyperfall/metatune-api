@@ -1,8 +1,9 @@
+// controllers/tagController.js
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
-const { exec } = require("child_process");
 const util = require("util");
+const { exec } = require("child_process");
 const { generateFingerprint } = require("../utils/fingerprint");
 const fetchAlbumArt = require("../utils/fetchAlbumArt");
 const { writeTags } = require("../utils/tagWriter");
@@ -10,122 +11,130 @@ const { zipTaggedFiles } = require("../utils/zipFiles");
 
 const execPromise = util.promisify(exec);
 
-// 🔁 Shared tagging logic (single & batch)
+// ————————————————
+// Shared tagging logic
+// ————————————————
 async function handleTagging(files) {
   const taggedFiles = [];
 
   for (const file of files) {
-    const inputFilePath = file.path;
+    const inputPath = file.path;
 
-    // 1️⃣ Determine extension: from multer path or original filename
-    let ext = path.extname(inputFilePath);
+    // 1) Determine extension
+    let ext = path.extname(inputPath);
     if (!ext) {
       ext = path.extname(file.originalname) || ".mp3";
     }
 
-    const filename = path.basename(inputFilePath);
-    const wavDir = path.join(__dirname, "..", "wavuploads");
-    const wavFilePath = path.join(wavDir, `${filename}.wav`);
+    // Prepare temp WAV for fingerprint
+    const baseName = path.basename(inputPath, path.extname(inputPath));
+    const wavDir   = path.join(__dirname, "..", "wavuploads");
+    const wavPath  = path.join(wavDir, `${baseName}.wav`);
+    if (!fs.existsSync(wavDir)) fs.mkdirSync(wavDir, { recursive: true });
 
-    try {
-      if (!fs.existsSync(wavDir)) fs.mkdirSync(wavDir, { recursive: true });
+    // 2) Convert to WAV
+    await execPromise(`ffmpeg -y -i "${inputPath}" -ar 44100 -ac 2 -f wav "${wavPath}"`);
 
-      // ➡️ Convert to WAV for fingerprinting
-      await new Promise((resolve, reject) => {
-        exec(
-          `ffmpeg -y -i "${inputFilePath}" -ar 44100 -ac 2 -f wav "${wavFilePath}"`,
-          (err, stdout, stderr) => err ? reject(new Error(stderr)) : resolve()
-        );
-      });
+    // 3) Fingerprint & AcoustID
+    const { duration, fingerprint } = await generateFingerprint(wavPath);
+    const acoust = await axios.get("https://api.acoustid.org/v2/lookup", {
+      params: {
+        client: process.env.ACOUSTID_API_KEY,
+        meta:   "recordings",
+        fingerprint,
+        duration,
+      },
+    });
 
-      // ➡️ Fingerprint & lookup
-      const { duration, fingerprint } = await generateFingerprint(wavFilePath);
-      const response = await axios.get("https://api.acoustid.org/v2/lookup", {
-        params: {
-          client: process.env.ACOUSTID_API_KEY,
-          meta: "recordings+releasegroups+compress",
-          fingerprint,
-          duration,
-        },
-      });
+    const recordings = acoust.data.results[0]?.recordings || [];
 
-      const match = response.data.results[0]?.recordings?.[0] || {};
-      const title  = match.title || "Unknown Title";
-      const artist = match.artists?.[0]?.name || "Unknown Artist";
-      const album  = match.releasegroups?.[0]?.title || "Unknown Album";
-      const year   = match.releasegroups?.[0]?.first_release_date?.split("-")[0] || "";
-      const genre  = match.tags?.[0]?.name || "Unknown Genre";
-
-      // ➡️ Fetch album art if available
-      let image = null;
-      const mbid = match.releasegroups?.[0]?.id;
-      if (mbid) {
-        try {
-          image = await fetchAlbumArt(mbid);
-        } catch {
-          console.warn(`⚠️ No album art for MBID ${mbid}`);
+    // 4) MusicBrainz lookup (if AcoustID found a recording)
+    let meta = { title: null, artist: null, album: null, year: null, genre: null, image: null };
+    if (recordings.length) {
+      const rec = recordings[0];
+      const mbid = rec.id; 
+      // Fetch MB record
+      const mb = await axios.get(
+        `https://musicbrainz.org/ws/2/recording/${mbid}`,
+        {
+          params: { inc: "artists+releases+tags", fmt: "json" },
+          headers: { "User-Agent": "MetaTune/1.0 (you@domain.com)" }
         }
+      ).then(r => r.data);
+
+      // Parse MB metadata
+      meta.title  = mb.title;
+      meta.artist = mb["artist-credit"]?.map(a => a.name).join(", ");
+      const release = mb.releases?.[0];
+      meta.album = release?.title;
+      meta.year  = release?.date?.split("-")[0];
+      meta.genre = mb.tags?.[0]?.name;
+      // Fetch cover via release-group or release MBID
+      const rgid = release?.["release-group"];
+      if (rgid) {
+        try {
+          meta.image = await fetchAlbumArt(rgid);
+        } catch {}
       }
-
-      // ➡️ Write tags into original file
-      await writeTags({ title, artist, album, year, genre, image }, inputFilePath);
-
-      // ➡️ Rename to "Artist - Title.ext"
-      const safeArtist = artist.replace(/[^\w\s-]/g, "").trim() || "Unknown Artist";
-      const safeTitle  = title.replace(/[^\w\s-]/g, "").trim()   || "Unknown Title";
-      const newFilename = `${safeArtist} - ${safeTitle}${ext}`;
-      const newFilePath = path.join(path.dirname(inputFilePath), newFilename);
-
-      fs.renameSync(inputFilePath, newFilePath);
-      taggedFiles.push(newFilePath);
-
-      // ➡️ Cleanup temp WAV
-      fs.unlink(wavFilePath, () => {});
-    } catch (err) {
-      console.error("❌ Failed tagging", file.originalname, err);
     }
+
+    // 5) If lookup failed, fallback to embedded tags
+    if (!meta.title) {
+      // read embedded tags (via your tagReader util)
+      const embedded = await require("../utils/tagReader")(inputPath);
+      meta = {
+        title:  embedded.title  || "Unknown Title",
+        artist: embedded.artist || "Unknown Artist",
+        album:  embedded.album  || "Unknown Album",
+        year:   embedded.year   || "",
+        genre:  embedded.genre  || "",
+        image:  embedded.image  || null
+      };
+    }
+
+    // 6) Write updated tags + art
+    await writeTags(meta, inputPath);
+
+    // 7) Rename file to "Artist - Title.ext"
+    const safe = str => str.replace(/[^\w\s-]/g,"").trim() || "Unknown";
+    const newName = `${safe(meta.artist)} - ${safe(meta.title)}${ext}`;
+    const newPath = path.join(path.dirname(inputPath), newName);
+    fs.renameSync(inputPath, newPath);
+
+    // 8) Cleanup temp WAV
+    fs.unlinkSync(wavPath);
+
+    taggedFiles.push(newPath);
   }
 
   return taggedFiles;
 }
 
-// 🔹 Single File Upload
+// ————————————————
+// Single File
+// ————————————————
 exports.processFile = async (req, res) => {
-  const file = req.file;
-  if (!file) return res.status(400).json({ error: "No file uploaded" });
-
-  const results = await handleTagging([file]);
-  if (results.length === 0) {
-    return res.status(500).json({ error: "Tagging failed" });
-  }
-
-  const finalPath = results[0];
-  res.download(finalPath, path.basename(finalPath), err => {
-    if (err) {
-      console.error("❌ Error sending file:", err);
-      res.status(500).json({ error: "Download failed" });
-    }
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  const [result] = await handleTagging([req.file]);
+  if (!result) return res.status(500).json({ error: "Tagging failed" });
+  res.download(result, path.basename(result), err => {
+    if (err) res.status(500).json({ error: "Download failed" });
   });
 };
 
-// 🔹 Batch File Upload
+// ————————————————
+// Batch Files
+// ————————————————
 exports.processBatch = async (req, res) => {
-  const files = req.files;
-  if (!files || files.length === 0) {
-    return res.status(400).json({ error: "No files uploaded" });
-  }
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ error: "No files uploaded" });
 
   const results = await handleTagging(files);
-  if (results.length === 0) {
-    return res.status(500).json({ error: "All files failed tagging" });
-  }
+  if (!results.length) return res.status(500).json({ error: "All files failed tagging" });
 
   const zipPath = await zipTaggedFiles(results);
   res.download(zipPath, "metatune-output.zip", err => {
-    if (err) {
-      console.error("❌ Error sending ZIP:", err);
-      res.status(500).json({ error: "ZIP download failed" });
-    }
-    fs.unlink(zipPath, () => {});
+    if (err) return res.status(500).json({ error: "ZIP download failed" });
+    fs.unlinkSync(zipPath);
   });
 };
