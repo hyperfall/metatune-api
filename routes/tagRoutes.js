@@ -6,23 +6,12 @@ const { processFile, processBatch } = require("../controllers/tagController");
 
 const tagRoutes = express.Router();
 
-// ✅ Supported Formats
 const allowedTypes = [
-  "audio/mpeg",    // .mp3
-  "audio/flac",    // .flac
-  "audio/x-flac",
-  "audio/mp4",     // .m4a
-  "audio/x-m4a",
-  "audio/wav",     // .wav
-  "audio/x-wav",
-  "audio/ogg",     // .ogg
-  "audio/webm",    // .webm
-  "audio/aac",     // .aac
-  "audio/opus",    // .opus
-  "audio/oga",     // .oga
+  "audio/mpeg", "audio/flac", "audio/x-flac",
+  "audio/mp4", "audio/x-m4a", "audio/wav", "audio/x-wav",
+  "audio/ogg", "audio/webm", "audio/aac", "audio/opus", "audio/oga",
 ];
 
-// ⚙️ Multer Storage Config
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadDir = "uploads/";
@@ -30,29 +19,31 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    const timestamp = Date.now();
-    const ext = path.extname(file.originalname);
-    const base = path.basename(file.originalname, ext).replace(/[^\w.-]/g, "_");
-    cb(null, `${timestamp}-${base}${ext}`);
+    const stamp = Date.now();
+    const ext   = path.extname(file.originalname);
+    const base  = path.basename(file.originalname, ext).replace(/[^\w.-]/g, "_");
+    cb(null, `${stamp}-${base}${ext}`);
   }
 });
 
-// 🧼 Filter for Supported File Types
 const fileFilter = (req, file, cb) => {
   if (allowedTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error("❌ Unsupported audio format."), false);
+    cb(new Error("Unsupported audio format."), false);
   }
 };
 
-// 🛠️ Multer Middleware
-const upload = multer({ storage, fileFilter });
+const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    files: 30,
+    fileSize: 50 * 1024 * 1024, // 50 MB per file
+  }
+});
 
-// 🎧 Single File Upload Route
 tagRoutes.post("/upload", upload.single("audio"), processFile);
-
-// 📦 Batch File Upload Route
-tagRoutes.post("/batch", upload.array("files", 30), processBatch);
+tagRoutes.post("/batch",  upload.array("audio", 30), processBatch);
 
 module.exports = tagRoutes;
