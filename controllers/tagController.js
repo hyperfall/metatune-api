@@ -1,5 +1,6 @@
 const { generateFingerprint } = require("../utils/fingerprint");
 const { writeTags } = require("../utils/tagWriter");
+const { fetchAlbumArt } = require("../utils/fetchArt");
 const axios = require("axios");
 
 exports.processFile = async (req, res) => {
@@ -22,10 +23,18 @@ exports.processFile = async (req, res) => {
     const title = match?.title || "Unknown Title";
     const artist = match?.artists?.[0]?.name || "Unknown Artist";
     const album = match?.releasegroups?.[0]?.title || "Unknown Album";
-    const year = match?.releasegroups?.[0]?.first_release_date?.split("-")[0] || ""; // e.g. "2017-01-01" → "2017"
-
-    // AcoustID → MusicBrainz doesn't always return genre directly. Placeholder fallback:
+    const year = match?.releasegroups?.[0]?.first_release_date?.split("-")[0] || "";
     const genre = match?.tags?.[0]?.name || "Unknown Genre";
+
+    let image = null;
+    const mbid = match?.releasegroups?.[0]?.id;
+    if (mbid) {
+      try {
+        image = await fetchAlbumArt(mbid);
+      } catch (err) {
+        console.warn(`No album art found for MBID ${mbid}`);
+      }
+    }
 
     const tags = {
       title,
@@ -33,6 +42,7 @@ exports.processFile = async (req, res) => {
       album,
       year,
       genre,
+      image,
     };
 
     await writeTags(tags, filePath);
