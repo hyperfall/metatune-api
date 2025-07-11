@@ -15,16 +15,16 @@ const app = express();
 const port = process.env.PORT || 3000;
 const ACOUSTID_KEY = process.env.ACOUSTID_API_KEY;
 
-// enable CORS & expose the Content-Disposition header so front-end can read it
+// enable CORS and expose Content-Disposition so frontend can read filename
 app.use(cors({
   origin: "*",
-  exposedHeaders: [ "Content-Disposition" ]
+  exposedHeaders: ["Content-Disposition"]
 }));
 
 const upload = multer({ dest: "uploads/" });
 
 function cleanup(filePath) {
-  fs.unlink(filePath, (err) => {
+  fs.unlink(filePath, err => {
     if (err) console.warn("⚠️ Could not delete temp file:", filePath);
   });
 }
@@ -37,13 +37,12 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: "No file uploaded" });
   }
-
-  // capture the original filename (without extension) for exact-match fallback
   const originalBase = path.parse(req.file.originalname).name;
-  const filePath = path.resolve(req.file.path);
+  const filePath     = path.resolve(req.file.path);
+
   console.log("📥 Uploaded file path:", filePath);
 
-  // Step 1: fingerprint with fpcalc
+  // Step 1: fingerprint
   fpcalc(filePath, async (err, result) => {
     if (err) {
       cleanup(filePath);
@@ -59,58 +58,71 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
       `&meta=recordings+releasegroups+releases`;
 
     try {
-      // Step 2: query AcoustID
+      // Step 2: lookup AcoustID
       const acoust = await axios.get(lookupURL);
-      const resultItem = acoust.data.results?.[0];
-      if (!resultItem) {
+      const results = acoust.data.results || [];
+      if (!results.length) {
         cleanup(filePath);
         return res.status(404).json({ error: "No AcoustID result found." });
       }
 
-      const score = resultItem.score;
-      let recs  = resultItem.recordings || [];
-      if (recs.length === 0) {
+      const top = results[0];
+      let  recs = top.recordings || [];
+      if (!recs.length) {
         cleanup(filePath);
         return res.status(404).json({ error: "No recordings in AcoustID response." });
       }
 
-      // Step 3: try to find an exact title match vs. original filename
+      // Step 3: exact-filename fallback
       let record = recs.find(r =>
-        r.title &&
-        r.title.toLowerCase() === originalBase.toLowerCase()
-      );
+        r.title && r.title.toLowerCase() === originalBase.toLowerCase()
+      ) || recs[0];
 
-      // fallback to top result
-      if (!record) {
-        record = recs[0];
-      }
+      // pull metadata
+      const artist  = record.artists?.[0]?.name       || "Unknown Artist";
+      const title   = record.title                    || "Unknown Title";
+      const rg      = record.releasegroups?.[0]       || {};
+      const album   = rg.title                        || "Unknown Album";
+      const year    = record.releases?.[0]?.date
+                         ?.split("-")[0]             || "";
+      const relId   = record.releases?.[0]?.id;
+      const rgId    = rg.id;
 
-      // pull out metadata fields
-      const artist = record.artists?.[0]?.name       || "Unknown Artist";
-      const title  = record.title                    || "Unknown Title";
-      const rg     = record.releasegroups?.[0];
-      const album  = rg?.title                       || "Unknown Album";
-      const year   = record.releases?.[0]?.date
-                       ?.split("-")[0] || "";
-      const relId  = record.releases?.[0]?.id;
+      // Step 4: try to fetch release art, then group art
+      let imageBuffer = null;
+      let imageMime   = "image/jpeg";
 
-      // Step 4: fetch cover art (prefers the release itself)
-      let imageBuffer = null, imageMime = "image/jpeg";
+      // 4a: release-level
       if (relId) {
         try {
-          const artRes = await axios.get(
+          const art = await axios.get(
             `https://coverartarchive.org/release/${relId}/front`,
             { responseType: "arraybuffer" }
           );
-          imageBuffer = Buffer.from(artRes.data);
-          imageMime   = artRes.headers["content-type"];
-          console.log("🖼️ Fetched cover art:", imageBuffer.length, imageMime);
+          imageBuffer = Buffer.from(art.data);
+          imageMime   = art.headers["content-type"];
+          console.log("🖼️ Release art fetched:", relId, imageBuffer.length, imageMime);
         } catch (_) {
-          console.warn("⚠️ No cover art for release:", relId);
+          console.warn("⚠️ No release art at:", relId);
         }
       }
 
-      // Step 5: build ID3 tags
+      // 4b: fallback to release-group
+      if (!imageBuffer && rgId) {
+        try {
+          const art = await axios.get(
+            `https://coverartarchive.org/release-group/${rgId}/front`,
+            { responseType: "arraybuffer" }
+          );
+          imageBuffer = Buffer.from(art.data);
+          imageMime   = art.headers["content-type"];
+          console.log("🖼️ Group art fetched:", rgId, imageBuffer.length, imageMime);
+        } catch (_) {
+          console.warn("⚠️ No release-group art at:", rgId);
+        }
+      }
+
+      // Step 5: write ID3 tags
       const tags = {
         title,
         artist,
@@ -129,21 +141,22 @@ app.post("/api/tag/upload", upload.single("audio"), async (req, res) => {
       console.log("📝 Writing tags:", tags);
       ID3Writer.write(tags, filePath);
 
-      // Step 6: stream the tagged file back
-      const output      = fs.readFileSync(filePath);
-      const safeName    = `${artist} - ${title}`.replace(/[\\/:*?"<>|]/g, "") + ".mp3";
+      // Step 6: stream back
+      const output   = fs.readFileSync(filePath);
+      const safeName = `${artist} - ${title}`
+                         .replace(/[\\/:*?"<>|]/g, "")
+                         .trim() + ".mp3";
 
       res.setHeader("Content-Type", "audio/mpeg");
       res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
       res.send(output);
 
-      // final cleanup
       cleanup(filePath);
 
     } catch (apiErr) {
       cleanup(filePath);
       console.error("❌ AcoustID/CoverArt error:", apiErr.response?.data || apiErr.message);
-      return res.status(500).json({
+      res.status(500).json({
         error:   "Tagging failed",
         details: apiErr.response?.data || apiErr.message
       });
