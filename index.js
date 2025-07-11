@@ -15,38 +15,30 @@ const app = express();
 const port = process.env.PORT || 3000;
 const ACOUSTID_KEY = process.env.ACOUSTID_API_KEY;
 
-// Allow browser to see our Content-Disposition header
 app.use(cors({
   origin: "*",
   exposedHeaders: ["Content-Disposition"]
 }));
 
 const upload = multer({ dest: "uploads/" });
-function cleanupTemp(fp) {
+function cleanup(fp) {
   fs.unlink(fp, err => {
     if (err) console.warn("⚠️ Could not delete temp file:", fp);
   });
 }
 
-app.get("/", (req, res) => {
-  res.send("MetaTune API is running.");
-});
+app.get("/", (_, res) => res.send("MetaTune API is running."));
 
 app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded" });
-  }
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
   const filePath = path.resolve(req.file.path);
-  console.log("📥  Uploaded file:", filePath);
+  console.log("📥 Uploaded:", filePath);
 
   fpcalc(filePath, async (fpErr, result = {}) => {
     if (fpErr) {
-      cleanupTemp(filePath);
-      console.error("❌ fpcalc error:", fpErr);
-      return res.status(500).json({
-        error:   "Fingerprinting failed",
-        details: fpErr.message
-      });
+      cleanup(filePath);
+      console.error("❌ fpcalc:", fpErr);
+      return res.status(500).json({ error: "Fingerprint failed", details: fpErr.message });
     }
 
     const { fingerprint, duration } = result;
@@ -60,31 +52,38 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
     try {
       const acoust = await axios.get(lookupURL);
       const recs   = acoust.data.results?.[0]?.recordings;
-      if (!Array.isArray(recs) || recs.length === 0) {
-        cleanupTemp(filePath);
+      if (!recs?.length) {
+        cleanup(filePath);
         return res.status(404).json({ error: "No metadata found." });
       }
 
-      // 1) Pull the first recording
+      // 1) Pick first recording
       const r      = recs[0];
-      const artist = r.artists?.[0]?.name               || "Unknown Artist";
-      const title  = r.title                            || "Unknown Title";
-      const album  = r.releasegroups?.[0]?.title        || "Unknown Album";
-      const year   = r.releasegroups?.[0]?.releases?.[0]?.date?.split("-")[0] || "";
-      const rgid   = r.releasegroups?.[0]?.id           || null;
+      const artist = r.artists?.[0]?.name        || "Unknown Artist";
+      const title  = r.title                     || "Unknown Title";
+      const album  = r.releasegroups?.[0]?.title || "Unknown Album";
+      const rgid   = r.releasegroups?.[0]?.id     || null;
 
-      // 2) Pick the “official” release under that group, else first one
-      let relObj = r.releasegroups?.[0]?.releases?.find(x => x.status === "Official");
-      if (!relObj) {
-        relObj = r.releasegroups?.[0]?.releases?.[0] || null;
-      }
+      // 2) Within that group, look for an “Official” release, else the first one
+      let relObj = r.releasegroups?.[0]?.releases?.find(x => x.status === "Official")
+                 || r.releasegroups?.[0]?.releases?.[0]
+                 || null;
       const relId = relObj?.id || null;
 
-      console.log("ℹ️  Metadata:", { artist, title, album, year, relId, rgid });
+      console.log("ℹ️ Metadata:", { artist, title, album, relId, rgid });
 
-      // 3) Try fetching cover art: first release, then group
-      let imageBuffer = null;
-      let imageMime   = "image/jpeg";
+      // 3) Safely extract year from relObj.date (string or {year})
+      let year = "";
+      if (relObj && relObj.date) {
+        if (typeof relObj.date === "string") {
+          year = relObj.date.split("-")[0];
+        } else if (relObj.date.year) {
+          year = String(relObj.date.year);
+        }
+      }
+
+      // 4) Fetch cover art: try release first, then group
+      let imageBuffer = null, imageMime = "image/jpeg";
 
       if (relId) {
         try {
@@ -94,9 +93,9 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
           );
           imageBuffer = Buffer.from(relRes.data);
           imageMime   = relRes.headers["content-type"];
-          console.log(`🖼️  Release art OK (${relId}): ${imageBuffer.length} bytes`);
+          console.log(`🖼 Release art OK (${relId})`);
         } catch (_) {
-          console.warn(`⚠️  No release art for ${relId}`);
+          console.warn(`⚠️ No release art for ${relId}`);
         }
       }
 
@@ -108,13 +107,13 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
           );
           imageBuffer = Buffer.from(grpRes.data);
           imageMime   = grpRes.headers["content-type"];
-          console.log(`🖼️  Group art OK (${rgid}): ${imageBuffer.length} bytes`);
+          console.log(`🖼 Group art OK (${rgid})`);
         } catch (_) {
-          console.warn(`⚠️  No group art for ${rgid}`);
+          console.warn(`⚠️ No group art for ${rgid}`);
         }
       }
 
-      // 4) Build and write ID3 tags
+      // 5) Build and write ID3 tags
       const tags = {
         title,
         artist,
@@ -132,7 +131,7 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
       console.log("📝 Writing tags:", tags);
       ID3Writer.write(tags, filePath);
 
-      // 5) Read back and send the file
+      // 6) Return tagged file
       const output   = fs.readFileSync(filePath);
       const safeName = `${artist} - ${title}`
         .replace(/[\\\/:*?"<>|]/g, "")
@@ -142,11 +141,11 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
       res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
       res.send(output);
 
-      // 6) Clean up temp
-      cleanupTemp(filePath);
+      // 7) Cleanup
+      cleanup(filePath);
 
     } catch (apiErr) {
-      cleanupTemp(filePath);
+      cleanup(filePath);
       console.error("❌ AcoustID/CoverArt error:", apiErr.response?.data || apiErr.message);
       res.status(500).json({
         error:   "Tagging failed",
