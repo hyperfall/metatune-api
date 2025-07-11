@@ -1,15 +1,35 @@
 const util = require("util");
-const exec = util.promisify(require("child_process").exec);
-const path = require("path");
+const crypto = require("crypto");
 const fs = require("fs");
+const path = require("path");
+const exec = util.promisify(require("child_process").exec);
 
-// 🔍 Generate AcoustID fingerprint from any supported audio file
+// 🧠 In-memory cache: { hash: { duration, fingerprint } }
+const fingerprintCache = {};
+
+// 🔒 Generate SHA256 hash of file
+const hashFile = (filePath) => {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+
+    stream.on("data", data => hash.update(data));
+    stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("error", reject);
+  });
+};
+
+// 🔍 Generate fingerprint using fpcalc (with cache)
 const generateFingerprint = async (inputPath) => {
+  const fileHash = await hashFile(inputPath);
+  if (fingerprintCache[fileHash]) {
+    return fingerprintCache[fileHash];
+  }
+
   const ext = path.extname(inputPath).toLowerCase();
   const wavPath = inputPath.replace(ext, ".wav");
 
   try {
-    // Convert to WAV if necessary
     if (ext !== ".wav") {
       await exec(`ffmpeg -y -i "${inputPath}" -ar 44100 -ac 2 -f wav "${wavPath}"`);
     }
@@ -24,13 +44,17 @@ const generateFingerprint = async (inputPath) => {
       throw new Error("Could not extract fingerprint or duration from fpcalc output.");
     }
 
-    return {
+    const result = {
       duration: parseFloat(durationMatch[1]),
       fingerprint: fingerprintMatch[1],
     };
+
+    fingerprintCache[fileHash] = result; // ⚡ Cache the result
+
+    return result;
   } finally {
     if (ext !== ".wav" && fs.existsSync(wavPath)) {
-      fs.unlinkSync(wavPath); // Cleanup temporary WAV
+      fs.unlinkSync(wavPath); // Clean temp WAV
     }
   }
 };
