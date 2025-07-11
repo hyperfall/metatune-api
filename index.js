@@ -11,87 +11,110 @@ const ID3Writer = require("node-id3");
 
 dotenv.config();
 
-const app         = express();
-const port        = process.env.PORT || 3000;
+const app          = express();
+const port         = process.env.PORT || 3000;
 const ACOUSTID_KEY = process.env.ACOUSTID_API_KEY;
 
-// allow browsers to see our Content-Disposition header
+// CORS so browser can see Content-Disposition
 app.use(cors({ origin: "*", exposedHeaders: ["Content-Disposition"] }));
 
 const upload = multer({ dest: "uploads/" });
 
 function cleanup(filePath) {
-  fs.unlink(filePath, e => e && console.warn("⚠️ failed to delete temp", filePath));
+  fs.unlink(filePath, err => {
+    if (err) console.warn("⚠️ could not delete temp file", filePath);
+  });
 }
 
-app.get("/", (req, res) => {
-  res.send("MetaTune API is up 🚀");
+app.get("/", (_req, res) => {
+  res.send("MetaTune API 🚀");
 });
 
 app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "No file" });
-  const filePath = path.resolve(req.file.path);
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded" });
+  }
 
+  const filePath = path.resolve(req.file.path);
   console.log("📥 Received:", filePath);
 
-  fpcalc(filePath, async (err, info) => {
+  fpcalc(filePath, async (err, fp) => {
     if (err) {
       cleanup(filePath);
-      console.error("❌ fpcalc:", err);
+      console.error("❌ fpcalc error:", err);
       return res.status(500).json({ error: "Fingerprint failed", details: err.message });
     }
 
-    const { fingerprint, duration } = info;
+    const { fingerprint, duration } = fp;
     const lookupURL =
-      `https://api.acoustid.org/v2/lookup?client=${ACOUSTID_KEY}` +
+      `https://api.acoustid.org/v2/lookup?` +
+      `client=${ACOUSTID_KEY}` +
       `&fingerprint=${encodeURIComponent(fingerprint)}` +
       `&duration=${duration}` +
       `&meta=recordings+releasegroups+releases`;
 
     try {
       const { data } = await axios.get(lookupURL);
-      const results = data.results || [];
+      const results = Array.isArray(data.results) ? data.results : [];
       if (!results.length) {
         cleanup(filePath);
         return res.status(404).json({ error: "No AcoustID matches" });
       }
 
-      console.log(`🎯 ${results.length} result(s), scores:`, results.map(r => r.score));
+      // prefer results that actually have recordings
+      const withRecs = results.filter(r => Array.isArray(r.recordings) && r.recordings.length > 0);
+      const candidates = withRecs.length ? withRecs : results;
 
-      // 1) pick any result that has a multi-artist recording
-      let chosen = results.find(r =>
-        r.recordings.some(rec => (rec.artists || []).length > 1)
-      ) || results[0];
+      // pick one that has >1 artist on a recording, else first
+      const chosen =
+        candidates.find(r =>
+          Array.isArray(r.recordings) &&
+          r.recordings.some(rc => Array.isArray(rc.artists) && rc.artists.length > 1)
+        ) ||
+        candidates[0];
 
-      console.log("ℹ️ Chosen result ID:", chosen.id, "score:", chosen.score);
+      console.log("🎯 picked AcoustID result", chosen.id, "score", chosen.score);
 
-      // 2) within that, pick the multi-artist rec if it exists
-      let rec = (chosen.recordings || []).find(r => (r.artists || []).length > 1)
-             || chosen.recordings[0];
+      // recordings array (guaranteed array if we came from withRecs, otherwise maybe empty)
+      const recsArr = Array.isArray(chosen.recordings) ? chosen.recordings : [];
 
-      console.log("👂 Available recordings’ artists:",
-        chosen.recordings.map(r => (r.artists || []).map(a => a.name))
+      // pick multi-artist recording if any, else first
+      let rec =
+        recsArr.find(rc => Array.isArray(rc.artists) && rc.artists.length > 1) ||
+        recsArr[0] ||
+        {};
+
+      console.log(
+        "ℹ️ available recs’ artists:",
+        recsArr.map(rc => (rc.artists || []).map(a => a.name))
       );
-      console.log("🌟 Picked rec ID:", rec.id, "artists:", (rec.artists||[]).map(a=>a.name));
+      console.log("🌟 chosen rec id", rec.id, "artists", (rec.artists || []).map(a => a.name));
 
-      // 3) if rec only had one artist but the release-group has many, override
+      // if the rec only has one artist but the release-group has more, override
       const rg = rec.releasegroups?.[0];
-      if ((rec.artists||[]).length === 1 && (rg?.artists||[]).length > 1) {
-        console.log("🔄 Overriding single artist from recording with release-group artists",
+      if (
+        Array.isArray(rec.artists) &&
+        rec.artists.length === 1 &&
+        Array.isArray(rg?.artists) &&
+        rg.artists.length > 1
+      ) {
+        console.log(
+          "🔄 overriding recording artist with release-group artists",
           rg.artists.map(a => a.name)
         );
         rec.artists = rg.artists;
       }
 
-      // pull out our final metadata
+      // final metadata
       const artist = (rec.artists || []).map(a => a.name).join(", ") || "Unknown Artist";
-      const title  = rec.title       || "Unknown Title";
-      const album  = rg?.title       || "Unknown Album";
+      const title  = rec.title || "Unknown Title";
+      const album  = rg?.title || "Unknown Album";
       const year   = rec.releases?.[0]?.date?.split("-")[0] || "";
 
-      // 4) try release-specific cover art
-      let imageBuffer = null, imageMime = "image/jpeg";
-      const relId = rec.releases?.[0]?.id;
+      // try to fetch release cover art
+      let imageBuffer = null;
+      let imageMime   = "image/jpeg";
+      const relId     = rec.releases?.[0]?.id;
       if (relId) {
         try {
           const img = await axios.get(
@@ -100,13 +123,13 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
           );
           imageBuffer = Buffer.from(img.data);
           imageMime   = img.headers["content-type"] || imageMime;
-          console.log("🖼️ Got release art:", imageBuffer.length, imageMime);
+          console.log("🖼 release art:", imageBuffer.length, imageMime);
         } catch {
-          console.warn("⚠️ No release art for", relId);
+          console.warn("⚠️ no release art for", relId);
         }
       }
 
-      // 5) if that failed, fallback to release-group art
+      // fallback to release-group cover art
       const rgid = rg?.id;
       if (!imageBuffer && rgid) {
         try {
@@ -116,13 +139,13 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
           );
           imageBuffer = Buffer.from(img.data);
           imageMime   = img.headers["content-type"] || imageMime;
-          console.log("🖼️ Fallback group art:", imageBuffer.length, imageMime);
+          console.log("🖼 group art:", imageBuffer.length, imageMime);
         } catch {
-          console.warn("⚠️ No group art for", rgid);
+          console.warn("⚠️ no group art for", rgid);
         }
       }
 
-      // 6) build and write tags
+      // build ID3 tags
       const tags = { title, artist, album, year };
       if (imageBuffer) {
         tags.image = {
@@ -132,22 +155,29 @@ app.post("/api/tag/upload", upload.single("audio"), (req, res) => {
           imageBuffer
         };
       }
+
       console.log("📝 Writing tags:", tags);
       ID3Writer.write(tags, filePath);
 
-      // 7) stream back
-      const out = fs.readFileSync(filePath);
-      const safeName = `${artist} - ${title}`.replace(/[\\/:*?"<>|]/g, "") + ".mp3";
+      // send it back
+      const outName = `${artist} - ${title}`
+        .replace(/[\\/:*?"<>|]/g, "")
+        .trim() + ".mp3";
+      const output = fs.readFileSync(filePath);
+
       res.setHeader("Content-Type",        "audio/mpeg");
-      res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
-      res.send(out);
+      res.setHeader("Content-Disposition", `attachment; filename="${outName}"`);
+      res.send(output);
 
       cleanup(filePath);
 
     } catch (e) {
       cleanup(filePath);
-      console.error("❌ Lookup/CoverArt error:", e.response?.data || e.message);
-      res.status(500).json({ error: "Tagging failed", details: e.response?.data || e.message });
+      console.error("❌ lookup/coverart error:", e.response?.data || e.message);
+      res.status(500).json({
+        error: "Tagging failed",
+        details: e.response?.data || e.message
+      });
     }
   });
 });
