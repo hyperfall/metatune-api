@@ -9,7 +9,8 @@ const { zipTaggedFiles } = require("../utils/zipFiles");
 const tagReader = require("../utils/tagReader");
 
 const MB_BASE = "https://musicbrainz.org/ws/2";
-const MB_HEADERS = { "User-Agent": "MetaTune/1.0 (contact@metatune.app)" };
+const MB_HEADERS = { "User-Agent": "MetaTune/1.0 (you@domain.com)" };
+
 const clean = str =>
   (str || "")
     .replace(/[^\p{L}\p{N}\s-]/gu, "")
@@ -31,128 +32,123 @@ async function handleTagging(files) {
       console.log(`[handleTagging] duration (rounded): ${duration}`);
 
       const ACOUSTID_KEY = process.env.ACOUSTID_API_KEY || process.env.ACOUSTID_KEY;
+      console.log(`[handleTagging] ▶ ACOUSTID_KEY loaded? ${!!ACOUSTID_KEY}`);
+
       let rec = null;
-      let releaseGroup = null;
 
-      // 🔍 AcoustID lookup
-      try {
-        const params = new URLSearchParams({
-          client: ACOUSTID_KEY,
-          format: "json",
-          fingerprint,
-          duration: duration.toString(),
-          meta: "recordings+releasegroups+sources"
-        });
+      // 1️⃣ Primary AcoustID lookup
+      if (ACOUSTID_KEY) {
+        try {
+          const params = new URLSearchParams();
+          params.append("client", ACOUSTID_KEY);
+          params.append("format", "json");
+          params.append("fingerprint", fingerprint);
+          params.append("duration", duration.toString());
+          params.append("meta", "recordings+releasegroups");
 
-        const acoustidRes = await axios.post(
-          "https://api.acoustid.org/v2/lookup",
-          params.toString(),
-          { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
-        );
+          const ac = await axios.post(
+            "https://api.acoustid.org/v2/lookup",
+            params.toString(),
+            { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+          );
+          const hits = ac.data.results || [];
+          console.log("[handleTagging] AcoustID raw:", ac.data);
 
-        console.log("[handleTagging] AcoustID raw:", acoustidRes.data);
-        const hits = acoustidRes.data.results || [];
-
-        const best = hits
-          .flatMap(hit => (hit.recordings || []).map(r => ({ rec: r, score: hit.score, rgs: hit.releasegroups?.length || 0 })))
-          .sort((a, b) => b.score - a.score)[0];
-
-        if (best) {
-          rec = best.rec;
-          console.log("[handleTagging] 🎯 Hit:", {
-            id: best.rec.id,
-            score: best.score,
-            recs: 1,
-            rgs: best.rgs
-          });
-        } else {
-          console.log("[handleTagging] 🔍 No strong fingerprint match — fallback engaged.");
+          if (hits.length && hits[0].recordings?.length) {
+            rec = hits[0].recordings[0];
+            console.log("[handleTagging] 🎯 AcoustID-recording match:", rec.id);
+          } else if (hits.length) {
+            // 2️⃣ Fallback: only got the ID
+            console.log("[handleTagging] ⚠️ No recordings — fallback MB lookup via AcoustID id:", hits[0].id);
+            const mbRec = await axios.get(`${MB_BASE}/recording/${hits[0].id}`, {
+              params: { inc: "artists+release-groups+tags", fmt: "json" },
+              headers: MB_HEADERS
+            });
+            rec = mbRec.data;
+            console.log("[handleTagging] ✅ MB rec fetched via AcoustID id:", rec.id);
+          }
+        } catch (err) {
+          console.warn("[handleTagging] ⚠️ AcoustID error:", err.response?.status, err.message);
         }
-      } catch (err) {
-        console.warn("[handleTagging] ⚠️ AcoustID lookup failed:", err.message);
       }
 
-      // ⛓️ MusicBrainz fallback if no good recording
+      // 3️⃣ Fallback: filename search if still no rec
       if (!rec) {
         console.log("[handleTagging] 🔍 Filename fallback");
-        const ext = path.extname(original);
-        const rawName = original.replace(ext, "").trim();
-        let [gArtist, gTitle] = rawName.split(" - ");
-        if (!gTitle) {
-          const tokens = rawName.split(" ");
-          gArtist = tokens.shift();
-          gTitle = tokens.join(" ");
+        const ext = path.extname(original) || "";
+        const nameOnly = path.basename(original, ext);
+        let [gTitle, gArtist] = nameOnly.split(" - ");
+        if (!gArtist) {
+          const parts = nameOnly.split(" ");
+          gTitle = parts.shift();
+          gArtist = parts.join(" ");
         }
-
         try {
           const sr = await axios.get(`${MB_BASE}/recording`, {
             params: { query: `recording:"${gTitle}" AND artist:"${gArtist}"`, fmt: "json", limit: 1 },
             headers: MB_HEADERS,
           });
-
           const found = sr.data.recordings?.[0];
           if (found?.id) {
             const lu = await axios.get(`${MB_BASE}/recording/${found.id}`, {
               params: { inc: "artists+release-groups+tags", fmt: "json" },
               headers: MB_HEADERS,
             });
-
             rec = lu.data;
             console.log("[handleTagging] ✅ Filename‐based MB rec:", rec.id);
           }
         } catch (err) {
-          console.warn("[handleTagging] ⚠️ MB fallback failed:", err.message);
+          console.warn("[handleTagging] ⚠️ Filename fallback error:", err.message);
         }
       }
 
-      // 📖 Read embedded tags
+      // 4️⃣ Read embedded tags regardless
       let embedded = {};
       try {
         embedded = await tagReader(inputPath);
         console.log("[handleTagging] 📋 Embedded tags:", {
           title: embedded.title,
           artist: embedded.artist,
-          album: embedded.album
+          album: embedded.album,
         });
       } catch (err) {
         console.warn("[handleTagging] ⚠️ tagReader failed:", err.message);
       }
 
-      // 🧠 Metadata merge
+      // 5️⃣ Merge metadata (AcoustID/MB rec > embedded > fallback)
       const title = rec?.title || embedded.title || "Unknown Title";
       const artist = rec?.["artist-credit"]
         ? rec["artist-credit"].map(a => a.name).join(", ")
         : embedded.artist || "Unknown Artist";
 
-      const releaseGroups = rec?.releasegroups || rec?.["release-groups"] || [];
-      const group = releaseGroups[0] || {};
-      const album = group.title || embedded.album || "Unknown Album";
-      const year = (group["first-release-date"] || group.first_release_date || "").split("-")[0] || embedded.year || "";
-      const genre = rec?.tags?.[0]?.name || embedded.genre || "Music";
+      const groups = rec?.releasegroups || rec?.["release-groups"] || [];
+      const rg = groups[0] || {};
+      const album = rg.title || embedded.album || "Unknown Album";
+      const year = (rg["first-release-date"] || rg.first_release_date || "").split("-")[0] || embedded.year || "";
+      const genre = rec?.tags?.[0]?.name || embedded.genre || "";
 
       console.log("[handleTagging] 📦 Final metadata:", { title, artist, album, year, genre });
 
-      // 🖼️ Cover art
+      // 6️⃣ Album art
       let image = null;
-      if (group.id) {
+      if (rg.id) {
         try {
-          image = await fetchAlbumArt(group.id);
-          console.log("[handleTagging] 🖼️ Fetched art for RG", group.id);
+          image = await fetchAlbumArt(rg.id);
+          console.log("[handleTagging] 🖼️ Fetched cover art:", rg.id);
         } catch (err) {
-          console.warn("[handleTagging] ⚠️ fetchAlbumArt failed:", err.message);
+          console.warn("[handleTagging] ⚠️ fetchAlbumArt error:", err.message);
         }
       }
-
       if (!image && embedded.image) {
         image = embedded.image;
         console.log("[handleTagging] 🎨 Using embedded art");
       }
 
-      // 🏷️ Write tags
+      // 7️⃣ Write final tags to file
       await writeTags({ title, artist, album, year, genre, image }, inputPath);
-      console.log("[handleTagging] ✅ writeTags succeeded");
+      console.log("[handleTagging] ✅ Tags written");
 
-      // 🧾 Rename
+      // 8️⃣ Rename file for clean naming
       const outExt = path.extname(original) || ".mp3";
       const finalName = `${clean(artist)} - ${clean(title)}${outExt}`;
       const finalPath = path.join(path.dirname(inputPath), finalName);
@@ -160,6 +156,7 @@ async function handleTagging(files) {
       console.log("[handleTagging] 🏷️ Renamed to:", finalName);
 
       results.push(finalPath);
+
     } catch (err) {
       console.error("[handleTagging] ❌ Error processing", original, err);
     }
@@ -168,41 +165,30 @@ async function handleTagging(files) {
   return results;
 }
 
-// Single upload
 exports.processFile = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
     const [out] = await handleTagging([req.file]);
     if (!out) return res.status(500).json({ error: "Tagging failed" });
-    res.download(out, path.basename(out), err => {
-      if (err) {
-        console.error("[processFile] Download error:", err);
-        res.status(500).json({ error: "Download failed" });
-      }
-    });
+    res.download(out, path.basename(out));
   } catch (err) {
-    console.error("[processFile] Internal error:", err);
+    console.error("[processFile]", err);
     res.status(500).json({ error: "Internal server error" });
   }
 };
 
-// Batch upload
 exports.processBatch = async (req, res) => {
   try {
     const files = req.files || [];
     if (!files.length) return res.status(400).json({ error: "No files uploaded" });
     const tagged = await handleTagging(files);
-    if (!tagged.length) return res.status(500).json({ error: "All files failed tagging" });
-    const zipPath = await zipTaggedFiles(tagged);
-    res.download(zipPath, "metatune-output.zip", err => {
-      if (err) {
-        console.error("[processBatch] ZIP download error:", err);
-        return res.status(500).json({ error: "ZIP download failed" });
-      }
-      fs.unlinkSync(zipPath);
+    if (!tagged.length) return res.status(500).json({ error: "Tagging failed" });
+    const zip = await zipTaggedFiles(tagged);
+    res.download(zip, "metatune-output.zip", err => {
+      if (!err) fs.unlinkSync(zip);
     });
   } catch (err) {
-    console.error("[processBatch] Internal error:", err);
+    console.error("[processBatch]", err);
     res.status(500).json({ error: "Internal server error" });
   }
 };
