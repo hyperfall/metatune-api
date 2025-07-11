@@ -5,10 +5,10 @@ const axios = require("axios");
 const util = require("util");
 const { exec } = require("child_process");
 const { generateFingerprint } = require("../utils/fingerprint");
-const fetchAlbumArt = require("../utils/fetchAlbumArt");
-const { writeTags } = require("../utils/tagWriter");
+const fetchAlbumArt      = require("../utils/fetchAlbumArt");
+const { writeTags }      = require("../utils/tagWriter");
 const { zipTaggedFiles } = require("../utils/zipFiles");
-const tagReader = require("../utils/tagReader");
+const tagReader          = require("../utils/tagReader");
 
 const execPromise = util.promisify(exec);
 const MB_BASE = "https://musicbrainz.org/ws/2";
@@ -18,68 +18,67 @@ async function handleTagging(files) {
   const results = [];
 
   for (const file of files) {
-    const originalName = file.originalname;
+    const original = file.originalname;
     const inputPath = file.path;
-    console.log(`[handleTagging] Starting: ${originalName}`);
+    console.log(`\n[handleTagging] Starting: ${original}`);
 
     try {
-      // 1️⃣ Determine extension from original upload
-      let ext = path.extname(originalName);
-      if (!ext) ext = path.extname(inputPath) || ".mp3";
+      // 1️⃣ Determine extension
+      let ext = path.extname(original) || path.extname(inputPath) || ".mp3";
 
-      // 2️⃣ Convert to WAV for fingerprinting
-      const base = path.basename(inputPath, path.extname(inputPath));
-      const wavDir = path.join(__dirname, "..", "wavuploads");
+      // 2️⃣ Make WAV for fingerprint
+      const base    = path.basename(inputPath, path.extname(inputPath));
+      const wavDir  = path.join(__dirname, "..", "wavuploads");
       const wavPath = path.join(wavDir, `${base}.wav`);
       if (!fs.existsSync(wavDir)) fs.mkdirSync(wavDir, { recursive: true });
-      console.log(`[handleTagging] → Converting to WAV: ${wavPath}`);
+      console.log(`[handleTagging] → ffmpeg to WAV: ${wavPath}`);
       await execPromise(`ffmpeg -y -i "${inputPath}" -ar 44100 -ac 2 -f wav "${wavPath}"`);
 
-      // 3️⃣ Fingerprint + AcoustID lookup
+      // 3️⃣ Fingerprint + AcoustID
       let rec = null;
       try {
         const { duration, fingerprint } = await generateFingerprint(wavPath);
         const ac = await axios.get("https://api.acoustid.org/v2/lookup", {
           params: {
             client: process.env.ACOUSTID_API_KEY,
-            meta: "recordings+releasegroups+compress",
+            meta:   "recordings+releasegroups+compress",
             fingerprint,
             duration,
           },
         });
         rec = ac.data.results?.[0]?.recordings?.[0] || null;
-        console.log(`[handleTagging] → AcoustID rec id: ${rec?.id || "none"}`);
+        console.log(`[handleTagging] → AcoustID rec: ${rec?.id || "none"}`);
       } catch (err) {
-        console.warn(`[handleTagging] → AcoustID lookup failed:`, err.message);
+        console.warn(`[handleTagging] → AcoustID failed:`, err.message);
       }
 
-      // 4️⃣ Fallback MusicBrainz search by filename
+      // 4️⃣ Fallback MB search by filename if no rec at all
       if (!rec) {
-        console.log(`[handleTagging] → No AcoustID, trying MB fallback`);
-        const nameOnly = originalName.replace(ext, "");
-        let [guessTitle, guessArtist] = nameOnly.split(" - ");
-        if (!guessArtist) {
+        console.log(`[handleTagging] → No AcoustID; trying MB search`);
+        const nameOnly = original.replace(ext, "");
+        let [gTitle, gArtist] = nameOnly.split(" - ");
+        if (!gArtist) {
           const parts = nameOnly.split(" ");
-          guessTitle = parts.shift();
-          guessArtist = parts.join(" ");
+          gTitle = parts.shift();
+          gArtist = parts.join(" ");
         }
         try {
           const sr = await axios.get(`${MB_BASE}/recording`, {
             params: {
-              query: `recording:"${guessTitle}" AND artist:"${guessArtist}"`,
-              fmt: "json",
-              limit: 1,
+              query: `recording:"${gTitle}" AND artist:"${gArtist}"`,
+              fmt:   "json",
+              limit: 1
             },
-            headers: MB_HEADERS,
+            headers: MB_HEADERS
           });
-          const found = sr.data.recordings?.[0];
-          if (found?.id) {
-            const lu = await axios.get(`${MB_BASE}/recording/${found.id}`, {
+          const fd = sr.data.recordings?.[0];
+          if (fd?.id) {
+            const lu = await axios.get(`${MB_BASE}/recording/${fd.id}`, {
               params: { inc: "artists+release-groups+tags", fmt: "json" },
-              headers: MB_HEADERS,
+              headers: MB_HEADERS
             });
             rec = lu.data;
-            console.log(`[handleTagging] → MB fallback rec id: ${rec.id}`);
+            console.log(`[handleTagging] → MB found rec: ${rec.id}`);
           }
         } catch (err) {
           console.warn(`[handleTagging] → MB fallback failed:`, err.message);
@@ -90,72 +89,61 @@ async function handleTagging(files) {
       let embedded = {};
       try {
         embedded = await tagReader(inputPath);
-        console.log(`[handleTagging] → Embedded:`, {
-          title: embedded.title,
-          artist: embedded.artist,
-          album: embedded.album,
+        console.log(`[handleTagging] → Embedded tags:`, {
+          title: embedded.title, artist: embedded.artist
         });
       } catch (err) {
         console.warn(`[handleTagging] → tagReader error:`, err.message);
       }
 
-      // 6️⃣ Smart metadata merge
-      const rg = (rec?.releasegroups || rec?.["release-groups"] || [])[0] || null;
-      const trustRec = Boolean(rg?.id);
+      // 6️⃣ Merge metadata
+      // Always trust recording if we have one:
+      const title  = rec?.title             || embedded.title  || "Unknown Title";
+      const artist = rec?.["artist-credit"]?.map(a => a.name).join(", ")
+                         || embedded.artist || "Unknown Artist";
 
-      const title = trustRec
-        ? rec.title
-        : embedded.title || "Unknown Title";
-      const artist = trustRec
-        ? rec["artist-credit"].map(a => a.name).join(", ")
-        : embedded.artist || "Unknown Artist";
-      const album = trustRec
-        ? rg.title
-        : embedded.album || "Unknown Album";
-
-      let year = "";
-      if (trustRec) {
-        year = (rg["first-release-date"] || rg.first_release_date || "").split("-")[0];
-      } else {
-        year = embedded.year || "";
-      }
-      const genre = trustRec
-        ? rec.tags?.[0]?.name || ""
-        : embedded.genre || "";
+      // Album/year/genre via release-group
+      const groups = rec?.releasegroups || rec?.["release-groups"] || [];
+      const rg     = groups[0] || {};
+      const album  = rg.title            || embedded.album  || "Unknown Album";
+      const year   = (rg["first-release-date"] || rg.first_release_date || "").split("-")[0]
+                         || embedded.year   || "";
+      const genre  = rec?.tags?.[0]?.name || embedded.genre || "";
 
       console.log(`[handleTagging] → Final meta:`, { title, artist, album, year, genre });
 
-      // 7️⃣ Fetch cover art or fallback embedded
+      // 7️⃣ Fetch cover art if we have a real MB release-group
       let image = null;
-      if (trustRec) {
+      if (rg.id) {
         try {
           image = await fetchAlbumArt(rg.id);
           console.log(`[handleTagging] → fetched art for RG ${rg.id}`);
         } catch (err) {
-          console.warn(`[handleTagging] → cover-art error:`, err.message);
+          console.warn(`[handleTagging] → art fetch failed:`, err.message);
         }
       }
+      // fallback to embedded if no MB art
       if (!image && embedded.image) {
         image = embedded.image;
-        console.log(`[handleTagging] → falling back to embedded art`);
+        console.log(`[handleTagging] → using embedded art`);
       }
 
       // 8️⃣ Write tags + art
       await writeTags({ title, artist, album, year, genre, image }, inputPath);
-      console.log(`[handleTagging] → writeTags succeeded`);
+      console.log(`[handleTagging] → writeTags OK`);
 
       // 9️⃣ Rename file
       const clean = s => s.replace(/[^\w\s-]/g, "").trim() || "Unknown";
-      const newName = `${clean(artist)} - ${clean(title)}${ext}`;
-      const newPath = path.join(path.dirname(inputPath), newName);
-      fs.renameSync(inputPath, newPath);
-      console.log(`[handleTagging] → Renamed to: ${newName}`);
+      const finalName = `${clean(artist)} - ${clean(title)}${ext}`;
+      const finalPath = path.join(path.dirname(inputPath), finalName);
+      fs.renameSync(inputPath, finalPath);
+      console.log(`[handleTagging] → Renamed to: ${finalName}`);
 
       // 🔟 Cleanup WAV
-      fs.unlinkSync(path.join(wavDir, `${base}.wav`));
-      results.push(newPath);
+      fs.unlinkSync(wavPath);
+      results.push(finalPath);
     } catch (err) {
-      console.error(`[handleTagging] ✖ Error processing ${originalName}:`, err);
+      console.error(`[handleTagging] ✖ Error on ${original}:`, err);
     }
   }
 
@@ -169,12 +157,12 @@ exports.processFile = async (req, res) => {
     if (!out) return res.status(500).json({ error: "Tagging failed" });
     res.download(out, path.basename(out), err => {
       if (err) {
-        console.error(`[processFile] Download error:`, err);
+        console.error(`[processFile] Download err:`, err);
         res.status(500).json({ error: "Download failed" });
       }
     });
   } catch (err) {
-    console.error(`[processFile] Unhandled:`, err);
+    console.error(`[processFile] ✖`, err);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -188,13 +176,13 @@ exports.processBatch = async (req, res) => {
     const zipPath = await zipTaggedFiles(outs);
     res.download(zipPath, "metatune-output.zip", err => {
       if (err) {
-        console.error(`[processBatch] ZIP download error:`, err);
+        console.error(`[processBatch] ZIP err:`, err);
         return res.status(500).json({ error: "ZIP download failed" });
       }
       fs.unlinkSync(zipPath);
     });
   } catch (err) {
-    console.error(`[processBatch] Unhandled:`, err);
+    console.error(`[processBatch] ✖`, err);
     res.status(500).json({ error: "Internal server error" });
   }
 };
