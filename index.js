@@ -1,3 +1,4 @@
+// index.js
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -22,28 +23,37 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 // ─── CORS ──────────────────────────────────────────────────────────────────
 app.use(cors({
   origin: "*",
-  exposedHeaders: ["Content-Disposition"]
+  exposedHeaders: ["Content-Disposition"],
 }));
 
 // ─── Multer Config ─────────────────────────────────────────────────────────
 const upload = multer({
   dest: UPLOAD_DIR,
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50 MB
+    fileSize: 50 * 1024 * 1024, // 50 MB per file
+    files:    30,               // max 30 files in batch
   },
   fileFilter: (req, file, cb) => {
     const allowed = [
-      "audio/mpeg", "audio/wav", "audio/x-wav",
-      "audio/mp4", "audio/x-m4a", "audio/x-aac",
-      "audio/flac", "audio/x-flac", "audio/ogg",
-      "audio/webm", "audio/aac"
+      "audio/mpeg",    // mp3
+      "audio/flac",    // flac
+      "audio/x-flac",
+      "audio/mp4",     // m4a
+      "audio/x-m4a",
+      "audio/wav",     // wav
+      "audio/x-wav",
+      "audio/ogg",     // ogg
+      "audio/webm",    // webm
+      "audio/aac",     // aac
+      "audio/opus",    // opus
+      "audio/oga",     // oga
     ];
     if (allowed.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error("Unsupported file type"), false);
+      cb(new Error("Unsupported audio format"), false);
     }
-  }
+  },
 });
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
@@ -59,13 +69,15 @@ app.post("/api/tag/upload", upload.single("audio"), processFile);
 app.post("/api/tag/batch", upload.array("audio"), processBatch);
 
 // ─── Cleanup ────────────────────────────────────────────────────────────────
-// every 15 minutes, delete uploads older than 15m
+// Every 15 minutes, delete uploads older than 15 minutes
 setInterval(() => {
   cleanupUploads(UPLOAD_DIR, 15);
 }, 15 * 60 * 1000);
 
-// on exit, purge everything
-process.on("exit", () => cleanupUploads(UPLOAD_DIR, 0));
+// On exit, purge everything
+process.on("exit", () => {
+  cleanupUploads(UPLOAD_DIR, 0);
+});
 
 // ─── Launch ─────────────────────────────────────────────────────────────────
 app.listen(port, () => {
