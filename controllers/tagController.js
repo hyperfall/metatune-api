@@ -158,4 +158,22 @@ async function handleTagging(files) {
 }
 
 exports.processFile = async (req, res) => {
-  if (
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  const [out] = await handleTagging([req.file]);
+  if (!out) return res.status(500).json({ error: "Tagging failed" });
+  res.download(out, path.basename(out), e => {
+    if (e) res.status(500).json({ error: "Download failed" });
+  });
+};
+
+exports.processBatch = async (req, res) => {
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ error: "No files uploaded" });
+  const tagged = await handleTagging(files);
+  if (!tagged.length) return res.status(500).json({ error: "All files failed tagging" });
+  const zipPath = await zipTaggedFiles(tagged);
+  res.download(zipPath, "metatune-output.zip", e => {
+    if (e) return res.status(500).json({ error: "ZIP download failed" });
+    fs.unlinkSync(zipPath);
+  });
+};
