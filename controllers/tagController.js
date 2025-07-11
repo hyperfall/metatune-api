@@ -1,17 +1,16 @@
 // controllers/tagController.js
-const fs = require("fs");
-const path = require("path");
-const axios = require("axios");
+const fs        = require("fs");
+const path      = require("path");
+const axios     = require("axios");
 const { generateFingerprint } = require("../utils/fingerprint");
-const fetchAlbumArt      = require("../utils/fetchAlbumArt");
-const { writeTags }      = require("../utils/tagWriter");
-const { zipTaggedFiles } = require("../utils/zipFiles");
-const tagReader          = require("../utils/tagReader");
+const fetchAlbumArt          = require("../utils/fetchAlbumArt");
+const { writeTags }          = require("../utils/tagWriter");
+const { zipTaggedFiles }     = require("../utils/zipFiles");
+const tagReader              = require("../utils/tagReader");
 
 const MB_BASE    = "https://musicbrainz.org/ws/2";
-const MB_HEADERS = { "User-Agent": "MetaTune/1.0 (you@domain.com)" };
+const MB_HEADERS = { "User-Agent": "MetaTune/1.0 (you@yourdomain.com)" };
 
-// Unicode-safe cleaner: letters, numbers, spaces, hyphens
 const clean = str =>
   (str || "")
     .replace(/[^\p{L}\p{N}\s-]/gu, "")
@@ -33,18 +32,18 @@ async function handleTagging(files) {
       console.log(`[handleTagging] fingerprint length: ${fingerprint.length}`);
       console.log(`[handleTagging] duration (rounded): ${duration}`);
 
-      // 2️⃣ AcoustID lookup via POST (form-encoded), full recordings
+      // 2️⃣ AcoustID lookup (w/ recordings+releasegroups)
       const ACOUSTID_KEY = process.env.ACOUSTID_API_KEY || process.env.ACOUSTID_KEY;
-      console.log(`[handleTagging] ▶ ACOUSTID_KEY loaded? ${!!ACOUSTID_KEY}`);
+      let rec = null, hit = null;
 
-      let rec = null;
       try {
-        const params = new URLSearchParams();
-        params.append("client",      ACOUSTID_KEY);
-        params.append("format",      "json");
-        params.append("fingerprint", fingerprint);
-        params.append("duration",    duration.toString());
-        params.append("meta",        "recordings+releasegroups");
+        const params = new URLSearchParams({
+          client:      ACOUSTID_KEY,
+          format:      "json",
+          fingerprint,
+          duration:    duration.toString(),
+          meta:        "recordings+releasegroups"
+        });
 
         const ac = await axios.post(
           "https://api.acoustid.org/v2/lookup",
@@ -52,39 +51,44 @@ async function handleTagging(files) {
           { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
         );
 
-        console.log("[handleTagging] AcoustID raw response:", ac.data);
-
+        console.log("[handleTagging] AcoustID raw:", ac.data);
         const hits = ac.data.results || [];
-        console.log(
-          "[handleTagging] 🎯 AcoustID hits:",
-          hits.map(h => ({
-            id:    h.id,
-            score: h.score,
-            recs:  (h.recordings||[]).length
-          }))
-        );
+        if (hits.length) {
+          hit = hits[0];
+          console.log("[handleTagging] 🎯 Hit:", {
+            id:    hit.id,
+            score: hit.score,
+            recs:  (hit.recordings  || []).length,
+            rgs:   (hit.releasegroups || []).length
+          });
 
-        // flatten & pick highest-score recording if available
-        const scored = [];
-        for (const h of hits) {
-          (h.recordings || []).forEach(r => scored.push({ rec: r, score: h.score }));
-        }
-        if (scored.length) {
-          scored.sort((a,b) => b.score - a.score);
-          rec = scored[0].rec;
-          console.log("[handleTagging] ✅ Best fingerprint match:", rec.id, "score", scored[0].score);
+          // 2a. pick best recording if any
+          const recs = (hit.recordings || []);
+          if (recs.length) {
+            // highest‐score is same for all recs in that hit
+            rec = recs[0];
+            console.log("[handleTagging] ✅ Using recording:", rec.id);
+          }
+          // 2b. else pick the first release‐group if present
+          else if ((hit.releasegroups || []).length) {
+            const rg = hit.releasegroups[0];
+            rec = {
+              id: rg.id,
+              title: rg.title,
+              "artist-credit": hit.artists || [],
+              "release-groups": [rg],
+              tags: hit.tags || []
+            };
+            console.log("[handleTagging] ⚠️ Using release-group fallback:", rg.id);
+          }
         }
       } catch (err) {
-        console.warn(
-          "[handleTagging] ⚠️ AcoustID lookup failed:",
-          err.response?.status,
-          err.response?.data || err.message
-        );
+        console.warn("[handleTagging] ⚠️ AcoustID error:", err.message);
       }
 
-      // 3️⃣ MusicBrainz filename fallback if no rec from fingerprint
+      // 3️⃣ filename → MusicBrainz recording fallback
       if (!rec) {
-        console.log("[handleTagging] 🔍 MusicBrainz filename fallback");
+        console.log("[handleTagging] 🔍 Filename fallback");
         const ext      = path.extname(original) || "";
         const nameOnly = original.replace(ext, "");
         let [gTitle, gArtist] = nameOnly.split(" - ");
@@ -96,41 +100,42 @@ async function handleTagging(files) {
         try {
           const sr = await axios.get(`${MB_BASE}/recording`, {
             params: { query: `recording:"${gTitle}" AND artist:"${gArtist}"`, fmt: "json", limit: 1 },
-            headers: MB_HEADERS,
+            headers: MB_HEADERS
           });
           const found = sr.data.recordings?.[0];
           if (found?.id) {
             const lu = await axios.get(`${MB_BASE}/recording/${found.id}`, {
               params: { inc: "artists+release-groups+tags", fmt: "json" },
-              headers: MB_HEADERS,
+              headers: MB_HEADERS
             });
             rec = lu.data;
-            console.log("[handleTagging] ✅ MB fallback rec:", rec.id);
+            console.log("[handleTagging] ✅ Filename‐based MB rec:", rec.id);
           }
         } catch (err) {
-          console.warn("[handleTagging] ⚠️ MB fallback error:", err.message);
+          console.warn("[handleTagging] ⚠️ Filename MB error:", err.message);
         }
       }
 
-      // 4️⃣ Read embedded tags
+      // 4️⃣ Embedded tags fallback
       let embedded = {};
       try {
         embedded = await tagReader(inputPath);
         console.log("[handleTagging] 📋 Embedded tags:", {
-          title: embedded.title,
+          title:  embedded.title,
           artist: embedded.artist,
-          album: embedded.album,
+          album:  embedded.album
         });
       } catch (err) {
         console.warn("[handleTagging] ⚠️ tagReader failed:", err.message);
       }
 
-      // 5️⃣ Merge metadata
-      const title  = rec?.title || embedded.title || "Unknown Title";
+      // 5️⃣ Merge into final metadata
+      const title  = rec?.title  || embedded.title  || "Unknown Title";
       const artist = rec?.["artist-credit"]
         ? rec["artist-credit"].map(a => a.name).join(", ")
         : embedded.artist || "Unknown Artist";
 
+      // coerce either rec.releasegroups or rec["release-groups"]
       const groups = rec?.releasegroups || rec?.["release-groups"] || [];
       const rg     = groups[0] || {};
       const album  = rg.title || embedded.album || "Unknown Album";
@@ -140,7 +145,7 @@ async function handleTagging(files) {
 
       console.log("[handleTagging] 📦 Final metadata:", { title, artist, album, year, genre });
 
-      // 6️⃣ Fetch cover art or fallback
+      // 6️⃣ Album art
       let image = null;
       if (rg.id) {
         try {
@@ -155,7 +160,7 @@ async function handleTagging(files) {
         console.log("[handleTagging] 🎨 Using embedded art");
       }
 
-      // 7️⃣ Write tags + art
+      // 7️⃣ Write tags & art
       await writeTags({ title, artist, album, year, genre, image }, inputPath);
       console.log("[handleTagging] ✅ writeTags succeeded");
 
@@ -168,7 +173,7 @@ async function handleTagging(files) {
 
       results.push(finalPath);
     } catch (err) {
-      console.error("[handleTagging] ❌ Error processing", original, err);
+      console.error("[handleTagging] ❌ Error processing", file.originalname, err);
     }
   }
 
