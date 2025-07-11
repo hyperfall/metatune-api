@@ -4,21 +4,21 @@ const multer = require("multer");
 const dotenv = require("dotenv");
 const path = require("path");
 
-const { processFile } = require("./controllers/tagController");
-const cleanupUploads = require("./utils/cleanupUploads"); // ✅ Corrected path
+const { processFile, processBatch } = require("./controllers/tagController");
+const cleanupUploads = require("./utils/cleanupUploads");
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Enable CORS
+// 🛡️ CORS
 app.use(cors({
   origin: "*",
   exposedHeaders: ["Content-Disposition"]
 }));
 
-// Multer upload config
+// 📁 Multer config
 const upload = multer({
   dest: "uploads/",
   limits: {
@@ -38,22 +38,26 @@ const upload = multer({
   }
 });
 
-// Routes
+// 🔹 Health check
 app.get("/", (req, res) => {
   res.send("🎧 MetaTune API is running.");
 });
 
+// 🔹 Single file tagging
 app.post("/api/tag/upload", upload.single("audio"), processFile);
+
+// 🔹 Batch file tagging
+app.post("/api/tag/batch", upload.array("audio"), processBatch);
 
 // ⏳ Clean up every 15 minutes
 setInterval(() => {
-  cleanupUploads("./uploads", 15); // Delete files older than 15 minutes
+  cleanupUploads("./uploads", 15);
 }, 15 * 60 * 1000);
 
 // 🧼 Clean up on exit
 process.on("exit", () => cleanupUploads("./uploads", 0));
 
-// Launch
+// 🚀 Launch server
 app.listen(port, () => {
   console.log(`🚀 MetaTune API running on port ${port}`);
 });
