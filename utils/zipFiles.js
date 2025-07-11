@@ -5,7 +5,6 @@ const archiver = require("archiver");
 
 async function zipTaggedFiles(filePaths) {
   return new Promise((resolve, reject) => {
-    // Ensure temp folder exists
     const tmpDir = path.join(__dirname, "..", "tmp");
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
@@ -18,12 +17,9 @@ async function zipTaggedFiles(filePaths) {
     archive.on("error", err => reject(err));
 
     archive.pipe(output);
-
-    // Add each tagged file under its basename
     for (const filePath of filePaths) {
       archive.file(filePath, { name: path.basename(filePath) });
     }
-
     archive.finalize();
   });
 }
