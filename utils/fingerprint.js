@@ -1,88 +1,83 @@
-const util = require("util");
-const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
-const exec = util.promisify(require("child_process").exec);
+// utils/fingerprint.js
+const util    = require("util");
+const crypto  = require("crypto");
+const fs      = require("fs");
+const path    = require("path");
+const exec    = util.promisify(require("child_process").exec);
 
-const CACHE_PATH = path.join(__dirname, "..", "cache", "fingerprintCache.json");
+const CACHE_DIR  = path.join(__dirname, "..", "cache");
+const CACHE_PATH = path.join(CACHE_DIR, "fingerprintCache.json");
 
 let fingerprintCache = {};
 
-// 🔁 Load cache from disk
-const loadCache = () => {
-  try {
-    if (fs.existsSync(CACHE_PATH)) {
-      const raw = fs.readFileSync(CACHE_PATH, "utf-8");
-      fingerprintCache = JSON.parse(raw || "{}");
-    }
-  } catch (err) {
-    console.error("⚠️ Failed to load fingerprint cache:", err);
-    fingerprintCache = {};
+// 👷‍♀️ Ensure cache folder & load on startup
+if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
+try {
+  if (fs.existsSync(CACHE_PATH)) {
+    fingerprintCache = JSON.parse(fs.readFileSync(CACHE_PATH, "utf-8") || "{}");
   }
-};
+} catch (err) {
+  console.error("⚠️ Could not load fingerprint cache:", err);
+  fingerprintCache = {};
+}
 
-// 💾 Save cache to disk
-const saveCache = () => {
+// 💾 Persist cache
+function saveCache() {
   try {
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(fingerprintCache, null, 2));
+    fs.writeFileSync(CACHE_PATH,
+      JSON.stringify(fingerprintCache, null, 2),
+      "utf-8"
+    );
   } catch (err) {
-    console.error("❌ Failed to save fingerprint cache:", err);
+    console.error("❌ Could not save fingerprint cache:", err);
   }
-};
+}
 
-// 🔒 Generate SHA256 hash of file contents
-const hashFile = (filePath) => {
+// 🔒 Compute SHA256 of the file
+function hashFile(filePath) {
   return new Promise((resolve, reject) => {
-    const hash = crypto.createHash("sha256");
-    const stream = fs.createReadStream(filePath);
-    stream.on("data", chunk => hash.update(chunk));
-    stream.on("end", () => resolve(hash.digest("hex")));
-    stream.on("error", reject);
+    const h = crypto.createHash("sha256");
+    const s = fs.createReadStream(filePath);
+    s.on("data", chunk => h.update(chunk));
+    s.on("end", () => resolve(h.digest("hex")));
+    s.on("error", reject);
   });
-};
+}
 
-// 🔍 Main fingerprint function
-const generateFingerprint = async (inputPath) => {
-  if (!Object.keys(fingerprintCache).length) loadCache();
-
+/**
+ * Generate a chromaprint fingerprint & duration for any supported audio file.
+ * Uses `fpcalc -json` so no manual ffmpeg conversion is needed.
+ */
+async function generateFingerprint(inputPath) {
+  // 1. Hash for caching
   const fileHash = await hashFile(inputPath);
-
   if (fingerprintCache[fileHash]) {
     return fingerprintCache[fileHash];
   }
 
-  const ext = path.extname(inputPath).toLowerCase();
-  const wavPath = inputPath.replace(ext, ".wav");
-
+  // 2. Call fpcalc in JSON mode
+  let fpData;
   try {
-    if (ext !== ".wav") {
-      await exec(`ffmpeg -y -i "${inputPath}" -ar 44100 -ac 2 -f wav "${wavPath}"`);
-    }
-
-    const target = ext === ".wav" ? inputPath : wavPath;
-    const { stdout } = await exec(`fpcalc "${target}"`);
-
-    const durationMatch = stdout.match(/DURATION=(\d+)/);
-    const fingerprintMatch = stdout.match(/FINGERPRINT=(.+)/);
-
-    if (!durationMatch || !fingerprintMatch) {
-      throw new Error("Could not extract fingerprint or duration from fpcalc output.");
-    }
-
-    const result = {
-      duration: parseFloat(durationMatch[1]),
-      fingerprint: fingerprintMatch[1],
-    };
-
-    fingerprintCache[fileHash] = result;
-    saveCache(); // persist
-
-    return result;
-  } finally {
-    if (ext !== ".wav" && fs.existsSync(wavPath)) {
-      fs.unlinkSync(wavPath);
-    }
+    // -json output; omit -length to let fpcalc pick full duration
+    const { stdout } = await exec(`fpcalc -json "${inputPath}"`);
+    fpData = JSON.parse(stdout);
+  } catch (err) {
+    throw new Error("fpcalc failed: " + err.message);
   }
-};
+
+  if (!fpData.fingerprint || typeof fpData.duration !== "number") {
+    throw new Error("fpcalc did not return fingerprint + duration");
+  }
+
+  // 3. Cache & return
+  const result = {
+    duration:    fpData.duration,
+    fingerprint: fpData.fingerprint,
+  };
+
+  fingerprintCache[fileHash] = result;
+  saveCache();
+  return result;
+}
 
 module.exports = { generateFingerprint };
