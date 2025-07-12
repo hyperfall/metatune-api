@@ -1,73 +1,131 @@
 // utils/fingerprint.js
-const fs = require("fs");
-const path = require("path");
-const fpcalc = require("fpcalc");
-const fetch = require("./fetch");
+
+const { exec } = require("child_process");
+const acrcloud = require("acrcloud");
+const axios = require("axios");
+const normalizeTitle = require("./normalizeTitle");
+const fetchAlbumArt = require("./fetchAlbumArt");
 const logger = require("./logger");
 
-const DEBUG_DUMP_PATH = path.join(__dirname, "..", "cache", "debugMatch.json");
+const ACR = new acrcloud({
+  host: process.env.ACR_HOST,
+  access_key: process.env.ACR_KEY,
+  access_secret: process.env.ACR_SECRET,
+});
 
-function fingerprintFile(filePath) {
+function runFpcalc(filePath) {
   return new Promise((resolve, reject) => {
-    fpcalc(filePath, { raw: true }, (err, result) => {
+    exec(`fpcalc -json "${filePath}"`, (err, stdout) => {
       if (err) return reject(err);
-      resolve(result);
+      try {
+        const result = JSON.parse(stdout);
+        resolve(result);
+      } catch (e) {
+        reject(e);
+      }
     });
   });
 }
 
-async function getBestFingerprintMatch(filePath) {
-  const { fingerprint, duration } = await fingerprintFile(filePath);
-
-  const res = await fetch.post("https://api.acrcloud.com/v1/identify", {
-    fingerprint,
-    duration,
-  });
-
-  if (!res || !res.status || !res.metadata?.music?.length) {
-    logger.warn("No fingerprint match from ACRCloud.");
-    return null;
-  }
-
-  const music = res.metadata.music[0];
-  const score = music.score || 0;
-  const matchDuration = music.duration_ms ? music.duration_ms / 1000 : duration;
-
-  // Filter: low score or big duration mismatch
-  if (score < 85 || Math.abs(matchDuration - duration) > 5) {
-    logger.warn(`Filtered out match: score=${score}, duration delta=${Math.abs(matchDuration - duration)}`);
-    return null;
-  }
-
-  // Album fallback logic
-  let album = music.album?.name || "Unknown Album";
-  if (music.release_date && music.external_metadata?.musicbrainz?.release?.length) {
-    const release = music.external_metadata.musicbrainz.release.find(r => r.status === "Official");
-    if (release?.title) album = release.title;
-  }
-
-  const match = {
-    method: "acrcloud",
-    score,
-    title: music.title,
-    artist: music.artists?.[0]?.name,
-    album,
-    date: music.release_date?.split("-")[0] || "2023",
-    coverArt: music.album?.images?.[0]?.url || null
-  };
-
-  logger.log("📥 Matched Raw:", music);
-
-  // Optional debug dump
+async function queryMusicBrainzByFingerprint(fp) {
   try {
-    fs.writeFileSync(DEBUG_DUMP_PATH, JSON.stringify(music, null, 2));
-  } catch (e) {
-    logger.warn("Could not write debug match dump.");
-  }
+    const response = await axios.get("https://api.acoustid.org/v2/lookup", {
+      params: {
+        client: process.env.ACOUSTID_KEY,
+        fingerprint: fp.fingerprint,
+        duration: fp.duration,
+        meta: "recordings+releasegroups+compress",
+      },
+    });
 
-  return { recording: match, score: match.score, method: match.method, duration };
+    const results = response.data.results || [];
+    if (!results.length) return null;
+
+    const top = results[0];
+    if (!top.recordings || !top.recordings.length) return null;
+
+    const rec = top.recordings[0];
+    return {
+      method: "musicbrainz",
+      score: top.score || 0,
+      recording: {
+        title: rec.title,
+        artist: rec.artists?.map(a => a.name).join(", "),
+        album: rec.releasegroups?.[0]?.title,
+        date: rec.releasegroups?.[0]?.first-release-date?.slice(0, 4),
+        mbid: rec.releasegroups?.[0]?.id,
+        genre: rec.tags?.[0]?.name || null,
+      },
+    };
+  } catch (err) {
+    logger.error(`[MusicBrainz] Error: ${err.message}`);
+    return null;
+  }
+}
+
+async function queryAcrcloud(buffer) {
+  try {
+    const result = await ACR.identify(buffer);
+    const metadata = result?.metadata?.music?.[0];
+    if (!metadata) return null;
+
+    return {
+      method: "acrcloud",
+      score: metadata.score || 0,
+      recording: {
+        title: metadata.title,
+        artist: metadata.artists?.map(a => a.name).join(", "),
+        album: metadata.album?.name,
+        date: metadata.release_date?.slice(0, 4),
+        genre: metadata.genres?.[0]?.name || null,
+      },
+    };
+  } catch (err) {
+    logger.error(`[ACRCloud] Error: ${err.message}`);
+    return null;
+  }
+}
+
+async function getBestFingerprintMatch(filePath) {
+  try {
+    const fp = await runFpcalc(filePath);
+    const fileBuffer = require("fs").readFileSync(filePath);
+
+    // Try ACRCloud first
+    let match = await queryAcrcloud(fileBuffer);
+    if (!match) {
+      logger.warn("🔁 Retrying ACRCloud...");
+      match = await queryAcrcloud(fileBuffer); // retry once
+    }
+
+    if (match) {
+      const art = await fetchAlbumArt(match.recording.mbid);
+      match.recording.coverArt = art?.imageBuffer ? `data:${art.mime};base64,${art.imageBuffer.toString("base64")}` : null;
+      return clean(match);
+    }
+
+    // Fallback to MusicBrainz
+    const alt = await queryMusicBrainzByFingerprint(fp);
+    if (alt) {
+      const art = await fetchAlbumArt(alt.recording.mbid);
+      alt.recording.coverArt = art?.imageBuffer ? `data:${art.mime};base64,${art.imageBuffer.toString("base64")}` : null;
+      return clean(alt);
+    }
+
+    return null;
+  } catch (e) {
+    logger.error(`[Fingerprinting] Failure: ${e.message}`);
+    return null;
+  }
+}
+
+function clean(match) {
+  const r = match.recording;
+  r.title = normalizeTitle(r.title);
+  r.album = normalizeTitle(r.album);
+  return match;
 }
 
 module.exports = {
-  getBestFingerprintMatch
+  getBestFingerprintMatch,
 };
