@@ -11,7 +11,7 @@ function normalize(str = "") {
 
 /** Split filename into { artist, title, raw } */
 function extractNamePartsFromFilename(filePath) {
-  const base  = path.basename(filePath, path.extname(filePath));
+  const base = path.basename(filePath, path.extname(filePath));
   const clean = base.replace(/\s+/g, " ").trim();
   const parts = clean.split(/[-–—]/).map(p => normalize(p));
   if (parts.length === 2) {
@@ -55,22 +55,32 @@ function computeDurationScore(mDur = 0, oDur = 0) {
 }
 
 /**
- * Composite “fusion” score from:
- *  - fingerprint confidence (0–1)
+ * Composite “fusion” score:
+ *  - fingerprint confidence
  *  - filename heuristics
  *  - embedded‐tag match
  *  - year proximity
  *  - duration similarity
+ *  - dejavu boost
  */
-function scoreFusionMatch(filePath, match = {}, embeddedTags = {}) {
+function scoreFusionMatch(filePath, metadata = {}, embeddedTags = {}) {
+  // If Dejavu recognized it, boost to high certainty immediately
+  if (metadata.source === 'dejavu') {
+    return {
+      score: 0.95,
+      confidence: 'High',
+      debug: { dejavuBoost: true }
+    };
+  }
+
   const fn = extractNamePartsFromFilename(filePath);
 
   const m = {
-    title:    normalize(match.title),
-    artist:   normalize(match.artist),
-    year:     match.year || "",
-    duration: match.duration || 0,
-    score:    (match.score || 0) / 100    // scale fingerprint to 0–1
+    title:    normalize(metadata.title),
+    artist:   normalize(metadata.artist),
+    year:     metadata.year || "",
+    duration: metadata.duration || 0,
+    score:    (metadata.score || 0) / 100    // scale to 0–1
   };
   const t = {
     title:    normalize(embeddedTags.title),
@@ -84,12 +94,12 @@ function scoreFusionMatch(filePath, match = {}, embeddedTags = {}) {
   const filenameArtistScore = fuzzyScore(fn.artist, m.artist);
   const filenameTitleScore  = fuzzyScore(fn.title,  m.title);
   const filenameRawScore    = fuzzyScore(fn.raw,    m.artist + m.title);
-  const tagArtistScore      = exactScore(t.artist,   m.artist);
-  const tagTitleScore       = exactScore(t.title,    m.title);
-  const yearScore           = computeYearScore(m.year,     t.year);
+  const tagArtistScore      = exactScore(t.artist, m.artist);
+  const tagTitleScore       = exactScore(t.title,  m.title);
+  const yearScore           = computeYearScore(m.year, t.year);
   const durationScore       = computeDurationScore(m.duration, t.duration);
 
-  // new weights (fingerprint = 60%, rest share the other 40%)
+  // weights: fingerprint=60%, raw filename=10%, duration=10%, others share 20%
   const finalScore =
       0.60 * fingerprintScore +
       0.10 * filenameRawScore +
@@ -100,11 +110,11 @@ function scoreFusionMatch(filePath, match = {}, embeddedTags = {}) {
       0.05 * yearScore +
       0.10 * durationScore;
 
-  // medium now kicks in at 0.5
+  // band thresholds
   const confidence =
-    finalScore >= 0.8 ? "High" :
-    finalScore >= 0.5 ? "Medium" :
-    "Low";
+    finalScore >= 0.8 ? 'High' :
+    finalScore >= 0.5 ? 'Medium' :
+    'Low';
 
   return {
     score: Number(finalScore.toFixed(3)),
