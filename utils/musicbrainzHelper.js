@@ -1,10 +1,14 @@
 const fetch = require("./fetch");
 
 /**
- * Query MusicBrainz recordings using artist and title.
+ * Query MusicBrainz recordings using artist, title, and optional year.
  */
-async function searchRecording(artist, title) {
-  const query = `artist:"${artist}" AND recording:"${title}"`;
+async function searchRecording(artist, title, year = "") {
+  let query = `artist:"${artist}" AND recording:"${title}"`;
+  if (year && /^\d{4}$/.test(year)) {
+    query += ` AND date:${year}`;
+  }
+
   const url = `https://musicbrainz.org/ws/2/recording/?query=${encodeURIComponent(query)}&fmt=json&limit=10`;
 
   const response = await fetch(url, {
@@ -20,24 +24,25 @@ async function searchRecording(artist, title) {
 /**
  * Filters out compilations and returns the most relevant release.
  */
-function findBestRelease(recording) {
+function findBestRelease(recording, year = "") {
   if (!recording.releases || !recording.releases.length) return null;
 
-  // Priority: Official + Album + No compilation in title
-  const officialAlbums = recording.releases.filter(r =>
+  // Filter to albums that are official, not compilations
+  const filtered = recording.releases.filter(r =>
     r.status === "Official" &&
     r["release-group"]?.["primary-type"] === "Album" &&
     !/hits|best|collection|playlist|various|compilation|nrj/i.test(r.title)
   );
 
-  if (officialAlbums.length > 0) return officialAlbums[0];
+  // Prioritize exact year match if available
+  if (year && /^\d{4}$/.test(year)) {
+    const exactYear = filtered.find(r => r.date?.startsWith(year));
+    if (exactYear) return exactYear;
+  }
 
-  // Fallback: Any album-type release
-  const fallbackAlbum = recording.releases.find(r =>
-    r["release-group"]?.["primary-type"] === "Album"
-  );
-
-  return fallbackAlbum || recording.releases[0];
+  return filtered[0] ||
+         recording.releases.find(r => r["release-group"]?.["primary-type"] === "Album") ||
+         recording.releases[0];
 }
 
 /**
@@ -45,48 +50,46 @@ function findBestRelease(recording) {
  */
 async function fetchCoverArt(releaseId) {
   const url = `https://coverartarchive.org/release/${releaseId}`;
-
   try {
     const res = await fetch(url);
     const data = await res.json();
-
     const frontImage = data.images?.find(img => img.front);
     return frontImage?.image || null;
   } catch (err) {
-    return null; // No image found or invalid release
+    return null;
   }
 }
 
 /**
- * High-level wrapper to get clean album info from MusicBrainz.
+ * Get clean album info including cover from MusicBrainz with year matching.
  */
-async function getOfficialAlbumInfo(artist, title) {
-  const recordings = await searchRecording(artist, title);
+async function getOfficialAlbumInfo(artist, title, year = "") {
+  const recordings = await searchRecording(artist, title, year);
   if (!recordings.length) return null;
 
   const bestRecording = recordings[0];
-  const release = findBestRelease(bestRecording);
+  const release = findBestRelease(bestRecording, year);
   if (!release) return null;
 
   const albumName = release.title;
-  const year = release.date?.slice(0, 4);
+  const releaseYear = release.date?.slice(0, 4);
   const coverUrl = await fetchCoverArt(release.id);
 
   return {
     album: albumName,
-    year,
+    year: releaseYear,
     coverUrl,
     releaseId: release.id
   };
 }
 
 /**
- * Use final metadata (artist, title, album) to find correct cover art.
+ * Cover art fallback using artist, title, album and optional year
  */
-async function getCoverArtByMetadata(artist, title, album) {
-  const recordings = await searchRecording(artist, title);
+async function getCoverArtByMetadata(artist, title, album, year = "") {
+  const recordings = await searchRecording(artist, title, year);
   for (const rec of recordings) {
-    const release = findBestRelease(rec);
+    const release = findBestRelease(rec, year);
     if (!release) continue;
 
     const match = release.title.toLowerCase() === album.toLowerCase() ||
