@@ -19,8 +19,7 @@ function runFpcalc(filePath) {
     exec(`fpcalc -json "${filePath}"`, (err, stdout) => {
       if (err) return reject(err);
       try {
-        const result = JSON.parse(stdout);
-        resolve(result);
+        resolve(JSON.parse(stdout));
       } catch (e) {
         reject(e);
       }
@@ -29,153 +28,157 @@ function runFpcalc(filePath) {
 }
 
 function isCompilation(albumName) {
-  const keywords = ["hits", "greatest", "now", "best", "compilation", "nrj"];
+  const keywords = ["hits","greatest","now","best","compilation","nrj"];
   return keywords.some(k => albumName?.toLowerCase().includes(k));
 }
 
+/**
+ * Fallback text‐search on MusicBrainz if album looks like a compilation
+ */
 async function queryMusicBrainzFallback(artist, title, logPrefix) {
   try {
-    const query = encodeURIComponent(`${title} ${artist}`);
-    const response = await axios.get(`https://musicbrainz.org/ws/2/recording`, {
+    const response = await axios.get("https://musicbrainz.org/ws/2/recording", {
       params: {
-        query,
+        query: `${title} AND artist:${artist}`,
         fmt: "json",
-        limit: 5,
+        limit: 5
       },
-      headers: {
-        "User-Agent": "MetaTune/1.0 (metatune@app)"
-      }
+      headers: { "User-Agent": "MetaTune/1.0 (metatune@app)" }
     });
-
-    const results = response.data.recordings || [];
-    if (!results.length) return null;
-
-    const recording = results.find(r => r.releases?.[0]);
-    const release = recording?.releases?.[0];
-    const album = release?.title || null;
-    const date = release?.date?.slice(0, 4) || null;
-    const mbid = release?.id || null;
-
+    const recs = response.data.recordings || [];
+    const rec = recs.find(r => r.releases?.length) || recs[0];
+    if (!rec) return null;
+    // Pull the recording MBID and top‐release
+    const release = rec.releases[0];
     return {
       method: "musicbrainz-fallback",
       score: 100,
       recording: {
-        title: normalizeTitle(recording.title),
-        artist: recording["artist-credit"]?.map(a => a.name).join(", ") || artist,
-        album: normalizeTitle(album),
-        date,
-        mbid,
+        mbid: rec.id,                              // recording MBID
+        title: normalizeTitle(rec.title),
+        artist: rec["artist-credit"]?.map(a => a.name).join(", "),
+        album: normalizeTitle(release.title),
+        date: release.date?.slice(0,4) || null,
+        releaseGroupMbid: release["release-group"]?.id,
         genre: null
       }
     };
   } catch (err) {
-    logger.error(`[MB Fallback] Error: ${err.message}`);
+    logger.error(`[MB Fallback] ${err.message}`);
     return null;
   }
 }
 
+/**
+ * Use AcoustID → MusicBrainz to get a recording match
+ */
 async function queryMusicBrainzByFingerprint(fp, logPrefix) {
   try {
-    const response = await axios.get("https://api.acoustid.org/v2/lookup", {
+    const resp = await axios.get("https://api.acoustid.org/v2/lookup", {
       params: {
         client: process.env.ACOUSTID_KEY,
         fingerprint: fp.fingerprint,
         duration: fp.duration,
-        meta: "recordings+releasegroups+compress",
-      },
+        meta: "recordings+releasegroups+compress"
+      }
     });
-
-    const results = response.data.results || [];
-    const logPath = path.join("logs", `${logPrefix}-acoustid-raw.json`);
-    fs.writeFileSync(logPath, JSON.stringify(results, null, 2));
-
+    const results = resp.data.results || [];
+    fs.writeFileSync(path.join("logs", `${logPrefix}-acoustid.json`), JSON.stringify(results, null, 2));
     if (!results.length) return null;
 
     const top = results[0];
     if (!top.recordings?.length) return null;
 
     const rec = top.recordings[0];
-    const bestRelease = rec.releasegroups?.[0];
-
+    const bestRelGroup = rec.releasegroups?.[0];
     return {
       method: "musicbrainz",
       score: top.score || 0,
       recording: {
+        mbid: rec.id,                             // recording MBID
         title: rec.title,
         artist: rec.artists?.map(a => a.name).join(", "),
-        album: bestRelease?.title || null,
-        date: bestRelease?.["first-release-date"]?.slice(0, 4) || null,
-        mbid: bestRelease?.id,
-        genre: rec.tags?.[0]?.name || null,
-      },
+        album: bestRelGroup?.title || null,
+        date: bestRelGroup?.["first-release-date"]?.slice(0,4) || null,
+        releaseGroupMbid: bestRelGroup?.id,
+        genre: rec.tags?.[0]?.name || null
+      }
     };
   } catch (err) {
-    logger.error(`[MusicBrainz] Error: ${err.message}`);
+    logger.error(`[MusicBrainz] ${err.message}`);
     return null;
   }
 }
 
+/**
+ * Query ACRCloud for a fingerprint match, preserve any MBID
+ */
 async function queryAcrcloud(buffer, logPrefix) {
   try {
     const result = await ACR.identify(buffer);
-    const logPath = path.join("logs", `${logPrefix}-acr-raw.json`);
-    fs.writeFileSync(logPath, JSON.stringify(result, null, 2));
+    fs.writeFileSync(path.join("logs", `${logPrefix}-acr.json`), JSON.stringify(result, null, 2));
+    const m = result.metadata?.music?.[0];
+    if (!m) return null;
 
-    const metadata = result?.metadata?.music?.[0];
-    if (!metadata) return null;
-
+    // ACRCloud may embed MusicBrainz recording ID under external_metadata
+    const ext = m.external_metadata?.musicbrainz?.recording?.id;
     return {
       method: "acrcloud",
-      score: metadata.score || 0,
+      score: m.score || 0,
       recording: {
-        title: metadata.title,
-        artist: metadata.artists?.map(a => a.name).join(", "),
-        album: metadata.album?.name,
-        date: metadata.release_date?.slice(0, 4),
-        genre: metadata.genres?.[0]?.name || null,
-      },
+        mbid: ext || null,
+        title: m.title,
+        artist: m.artists?.map(a => a.name).join(", "),
+        album: m.album?.name || null,
+        date: m.release_date?.slice(0,4) || null,
+        genre: m.genres?.[0]?.name || null
+      }
     };
   } catch (err) {
-    logger.error(`[ACRCloud] Error: ${err.message}`);
+    logger.error(`[ACRCloud] ${err.message}`);
     return null;
   }
 }
 
+/**
+ * Main orchestrator: ACRCloud → fallback compilation check → AcoustID → none
+ */
 async function getBestFingerprintMatch(filePath) {
   try {
     const fp = await runFpcalc(filePath);
-    const fileBuffer = fs.readFileSync(filePath);
-    const baseName = path.basename(filePath, path.extname(filePath));
+    const buffer = fs.readFileSync(filePath);
+    const prefix = path.basename(filePath, path.extname(filePath));
 
-    // 🔍 Step 1: ACRCloud
-    let match = await queryAcrcloud(fileBuffer, baseName);
+    // 1) Try ACRCloud
+    let match = await queryAcrcloud(buffer, prefix);
     if (!match) {
-      logger.warn("🔁 Retrying ACRCloud...");
-      match = await queryAcrcloud(fileBuffer, baseName);
+      logger.warn("🔁 Retrying ACRCloud");
+      match = await queryAcrcloud(buffer, prefix);
     }
-
     if (match) {
-      const r = match.recording;
-      const album = r.album || "";
-      if (isCompilation(album)) {
-        logger.warn(`[fallback] Album corrected: "${album}" → querying MusicBrainz...`);
-        const mb = await queryMusicBrainzFallback(r.artist, r.title, baseName);
+      // if album looks like a compilation, force MusicBrainz fallback
+      if (isCompilation(match.recording.album)) {
+        logger.warn(`[fallback] Compilation detected (“${match.recording.album}”), falling back...`);
+        const mb = await queryMusicBrainzFallback(match.recording.artist, match.recording.title, prefix);
         if (mb) return clean(mb);
       }
       return clean(match);
     }
 
-    // 🔍 Step 2: MusicBrainz via AcoustID
-    const alt = await queryMusicBrainzByFingerprint(fp, baseName);
+    // 2) AcoustID→MusicBrainz
+    const alt = await queryMusicBrainzByFingerprint(fp, prefix);
     if (alt) return clean(alt);
 
     return null;
-  } catch (e) {
-    logger.error(`[Fingerprinting] Failure: ${e.message}`);
+  } catch (err) {
+    logger.error(`[Fingerprinting] ${err.message}`);
     return null;
   }
 }
 
+/**
+ * Normalize text fields
+ */
 function clean(match) {
   const r = match.recording;
   r.title = normalizeTitle(r.title);
@@ -183,6 +186,4 @@ function clean(match) {
   return match;
 }
 
-module.exports = {
-  getBestFingerprintMatch,
-};
+module.exports = { getBestFingerprintMatch };
