@@ -7,10 +7,25 @@ function normalize(str) {
     .trim() || "";
 }
 
-function extractNameFromFilename(filePath) {
-  if (!filePath || typeof filePath !== "string") return "";
+function extractNamePartsFromFilename(filePath) {
   const base = path.basename(filePath, path.extname(filePath));
-  return normalize(base);
+  const clean = base.replace(/\s+/g, " ").trim();
+
+  // Try common separators like 'Artist - Title' or 'Title – Artist'
+  const parts = clean.split(/[-–]/).map(p => normalize(p));
+  if (parts.length === 2) {
+    return {
+      artist: parts[0],
+      title: parts[1],
+      raw: normalize(base)
+    };
+  }
+
+  return {
+    artist: "",
+    title: "",
+    raw: normalize(base)
+  };
 }
 
 function computeTextMatchScore(a, b) {
@@ -18,18 +33,18 @@ function computeTextMatchScore(a, b) {
   return normalize(a) === normalize(b) ? 1 : 0;
 }
 
-/**
- * Generate a confidence score based on:
- * - Match vs filename
- * - Match vs embedded tags (optional)
- * - Match confidence from fingerprint
- */
-function scoreFusionMatch({
-  filePath = "",
-  match = {},           // { title, artist, album, score }
-  embeddedTags = {}     // { title, artist }
-}) {
-  const fileName = extractNameFromFilename(filePath);
+function fuzzyScore(a, b) {
+  if (!a || !b) return 0;
+  a = normalize(a);
+  b = normalize(b);
+  if (a === b) return 1;
+  if (a.includes(b) || b.includes(a)) return 0.7;
+  return 0;
+}
+
+function scoreFusionMatch(filePath, match = {}, embeddedTags = {}) {
+  const filenameParts = extractNamePartsFromFilename(filePath);
+
   const normMatch = {
     title: normalize(match.title),
     artist: normalize(match.artist)
@@ -40,28 +55,40 @@ function scoreFusionMatch({
     artist: normalize(embeddedTags.artist)
   };
 
-  const combined = `${normMatch.artist}${normMatch.title}`;
-  const filenameScore = computeTextMatchScore(fileName, combined);
-
-  const titleTagScore = computeTextMatchScore(normTags.title, normMatch.title);
-  const artistTagScore = computeTextMatchScore(normTags.artist, normMatch.artist);
-
   const fingerprintScore = match.score || 0;
 
-  // Weight factors (customize if needed)
+  // Scores from various heuristics
+  const filenameArtistScore = fuzzyScore(filenameParts.artist, normMatch.artist);
+  const filenameTitleScore = fuzzyScore(filenameParts.title, normMatch.title);
+  const filenameRawScore = fuzzyScore(filenameParts.raw, normMatch.artist + normMatch.title);
+
+  const tagArtistScore = computeTextMatchScore(normTags.artist, normMatch.artist);
+  const tagTitleScore = computeTextMatchScore(normTags.title, normMatch.title);
+
+  // Final weighted score
   const score = (
-    0.5 * fingerprintScore / 100 +
-    0.25 * filenameScore +
-    0.15 * titleTagScore +
-    0.10 * artistTagScore
+    0.45 * (fingerprintScore / 100) +
+    0.15 * filenameRawScore +
+    0.15 * filenameArtistScore +
+    0.10 * filenameTitleScore +
+    0.10 * tagArtistScore +
+    0.05 * tagTitleScore
   );
 
-  const confidenceLevel = score >= 0.8 ? "High" :
-                          score >= 0.6 ? "Medium" : "Low";
+  const confidence = score >= 0.8 ? "High" :
+                     score >= 0.6 ? "Medium" : "Low";
 
   return {
     score: Number(score.toFixed(3)),
-    confidence: confidenceLevel
+    confidence,
+    debug: {
+      fingerprintScore,
+      filenameArtistScore,
+      filenameTitleScore,
+      filenameRawScore,
+      tagArtistScore,
+      tagTitleScore
+    }
   };
 }
 
