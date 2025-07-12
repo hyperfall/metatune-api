@@ -1,7 +1,7 @@
-const fetch = require("./fetch"); // ✅ dynamic import safe
+const fetch = require("./fetch");
 
 /**
- * Search MusicBrainz for a recording by artist + title.
+ * Query MusicBrainz recordings using artist and title.
  */
 async function searchRecording(artist, title) {
   const query = `artist:"${artist}" AND recording:"${title}"`;
@@ -18,22 +18,30 @@ async function searchRecording(artist, title) {
 }
 
 /**
- * Get the best matching release from a recording.
- * Filters out compilations and prioritizes official album releases.
+ * Filters out compilations and returns the most relevant release.
  */
 function findBestRelease(recording) {
-  if (!recording.releases || recording.releases.length === 0) return null;
+  if (!recording.releases || !recording.releases.length) return null;
 
-  return recording.releases.find(rel =>
-    rel.status === "Official" &&
-    rel["release-group"] &&
-    rel["release-group"]["primary-type"] === "Album" &&
-    !/hits|best|collection|playlist|various/i.test(rel.title)
-  ) || recording.releases[0];
+  // Priority: Official + Album + No compilation in title
+  const officialAlbums = recording.releases.filter(r =>
+    r.status === "Official" &&
+    r["release-group"]?.["primary-type"] === "Album" &&
+    !/hits|best|collection|playlist|various|compilation|nrj/i.test(r.title)
+  );
+
+  if (officialAlbums.length > 0) return officialAlbums[0];
+
+  // Fallback: Any album-type release
+  const fallbackAlbum = recording.releases.find(r =>
+    r["release-group"]?.["primary-type"] === "Album"
+  );
+
+  return fallbackAlbum || recording.releases[0];
 }
 
 /**
- * Fetch cover art from Cover Art Archive using release ID.
+ * Fetch cover art URL from Cover Art Archive.
  */
 async function fetchCoverArt(releaseId) {
   const url = `https://coverartarchive.org/release/${releaseId}`;
@@ -42,7 +50,7 @@ async function fetchCoverArt(releaseId) {
     const res = await fetch(url);
     const data = await res.json();
 
-    const frontImage = data.images.find(img => img.front);
+    const frontImage = data.images?.find(img => img.front);
     return frontImage?.image || null;
   } catch (err) {
     return null; // No image found or invalid release
@@ -50,8 +58,7 @@ async function fetchCoverArt(releaseId) {
 }
 
 /**
- * High-level function to get official album name and cover art
- * from MusicBrainz based on artist + title.
+ * High-level wrapper to get clean album info from MusicBrainz.
  */
 async function getOfficialAlbumInfo(artist, title) {
   const recordings = await searchRecording(artist, title);
@@ -67,7 +74,7 @@ async function getOfficialAlbumInfo(artist, title) {
 
   return {
     album: albumName,
-    year: year,
+    year,
     coverUrl,
     releaseId: release.id
   };
