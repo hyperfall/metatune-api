@@ -1,0 +1,8 @@
+database:
+  host:     localhost
+  user:     dejavu_user
+  password: supersecret
+  database: dejavu_db
+
+fingerprint_limit: 5       # max number of fingerprints to match per song
+match_threshold: 0.2       # how close a match must be
