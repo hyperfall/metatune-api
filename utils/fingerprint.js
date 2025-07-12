@@ -27,6 +27,13 @@ function runFpcalc(filePath) {
   });
 }
 
+function getBestRelease(releases = []) {
+  const sorted = releases.filter(r => r.status === "Official" && r.title && r.date).sort(
+    (a, b) => new Date(a.date) - new Date(b.date)
+  );
+  return sorted[0] || releases[0] || null;
+}
+
 async function queryMusicBrainzByFingerprint(fp) {
   try {
     const response = await axios.get("https://api.acoustid.org/v2/lookup", {
@@ -34,7 +41,7 @@ async function queryMusicBrainzByFingerprint(fp) {
         client: process.env.ACOUSTID_KEY,
         fingerprint: fp.fingerprint,
         duration: fp.duration,
-        meta: "recordings+releasegroups+compress",
+        meta: "recordings+releases+releasegroups+compress",
       },
     });
 
@@ -45,15 +52,17 @@ async function queryMusicBrainzByFingerprint(fp) {
     if (!top.recordings || !top.recordings.length) return null;
 
     const rec = top.recordings[0];
+    const bestRelease = getBestRelease(rec.releases);
+
     return {
       method: "musicbrainz",
       score: top.score || 0,
       recording: {
         title: rec.title,
         artist: rec.artists?.map(a => a.name).join(", "),
-        album: rec.releasegroups?.[0]?.title,
-        date: rec.releasegroups?.[0]?.first-release-date?.slice(0, 4),
-        mbid: rec.releasegroups?.[0]?.id,
+        album: bestRelease?.title || rec.releasegroups?.[0]?.title,
+        date: bestRelease?.date?.slice(0, 4) || rec.releasegroups?.[0]?."first-release-date"?.slice(0, 4),
+        mbid: bestRelease?.id || rec.releasegroups?.[0]?.id,
         genre: rec.tags?.[0]?.name || null,
       },
     };
@@ -91,11 +100,10 @@ async function getBestFingerprintMatch(filePath) {
     const fp = await runFpcalc(filePath);
     const fileBuffer = require("fs").readFileSync(filePath);
 
-    // Try ACRCloud first
     let match = await queryAcrcloud(fileBuffer);
     if (!match) {
       logger.warn("🔁 Retrying ACRCloud...");
-      match = await queryAcrcloud(fileBuffer); // retry once
+      match = await queryAcrcloud(fileBuffer);
     }
 
     if (match) {
@@ -104,7 +112,6 @@ async function getBestFingerprintMatch(filePath) {
       return clean(match);
     }
 
-    // Fallback to MusicBrainz
     const alt = await queryMusicBrainzByFingerprint(fp);
     if (alt) {
       const art = await fetchAlbumArt(alt.recording.mbid);
