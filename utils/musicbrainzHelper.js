@@ -1,17 +1,19 @@
 // utils/musicbrainzHelper.js
 const fetch = require("./fetch");
+const fetchAlbumArtFromUrl = require("./fetchAlbumArtFromUrl");
+
+const USER_AGENT = "MetaTune/1.0 (+https://noctark.ai)";
+const YEAR_REGEX = /^\d{4}$/;
 
 /**
- * Fetch a MusicBrainz recording by its MBID, including releases and release-groups.
+ * Fetch a MusicBrainz recording by its MBID (with releases & release-groups).
  */
 async function fetchRecordingByMBID(mbid) {
   if (!mbid) return null;
   const url = `https://musicbrainz.org/ws/2/recording/${mbid}` +
               `?inc=releases+release-groups+tags&fmt=json`;
   try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": "MetaTune/1.0 (metatune@noctark.ai)" }
-    });
+    const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
     return await res.json();
   } catch (err) {
     console.warn(`[MBID Lookup] Failed to fetch recording ${mbid}: ${err.message}`);
@@ -20,89 +22,85 @@ async function fetchRecordingByMBID(mbid) {
 }
 
 /**
- * Query MusicBrainz recordings using artist, title, and optional year.
+ * Search MusicBrainz recordings via artist + title + optional year hint.
  */
 async function searchRecording(artist, title, year = "") {
-  let query = `artist:"${artist}" AND recording:"${title}"`;
-  if (year && /^\d{4}$/.test(year)) {
-    query += ` AND date:${year}`;
-  }
+  let q = `artist:"${artist}" AND recording:"${title}"`;
+  if (year && YEAR_REGEX.test(year)) q += ` AND date:${year}`;
   const url = `https://musicbrainz.org/ws/2/recording/` +
-              `?query=${encodeURIComponent(query)}&fmt=json&limit=10`;
-  const res = await fetch(url, {
-    headers: { "User-Agent": "MetaTune/1.0 (metatune@noctark.ai)" }
-  });
-  const data = await res.json();
-  return data.recordings || [];
+              `?query=${encodeURIComponent(q)}&fmt=json&limit=10`;
+  try {
+    const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+    const data = await res.json();
+    return data.recordings || [];
+  } catch (err) {
+    console.warn(`[Search] Failed for ${artist} / ${title}: ${err.message}`);
+    return [];
+  }
 }
 
 /**
- * Filters out compilations and returns the most relevant release.
+ * From a recording, pick the most appropriate release:
+ * 1) Official album (non-compilation), year-matched if possible  
+ * 2) Any official album  
+ * 3) Any album  
+ * 4) First release  
  */
 function findBestRelease(recording, year = "") {
-  if (!recording.releases || !recording.releases.length) return null;
+  const rels = recording.releases || [];
+  const isAlbum = r => r["release-group"]?.["primary-type"] === "Album";
+  const notComp = r => !/hits|best|collection|playlist|various|compilation|nrj/i.test(r.title);
+  const officialAlbums = rels.filter(r => r.status === "Official" && isAlbum(r) && notComp(r));
 
-  // 1) Official album releases, non-compilation
-  const official = recording.releases.filter(r =>
-    r.status === "Official" &&
-    r["release-group"]?.["primary-type"] === "Album" &&
-    !/hits|best|collection|playlist|various|compilation|nrj/i.test(r.title)
-  );
-
-  // 2) If year provided, try exact match
-  if (year && official.length) {
-    const exact = official.find(r => r.date?.startsWith(year));
+  // exact year
+  if (year && YEAR_REGEX.test(year)) {
+    const exact = officialAlbums.find(r => r.date?.startsWith(year));
     if (exact) return exact;
   }
-
-  // 3) Pick first official, else any album, else first release
-  return official[0] ||
-         recording.releases.find(r => r["release-group"]?.["primary-type"] === "Album") ||
-         recording.releases[0];
+  if (officialAlbums.length)       return officialAlbums[0];
+  const anyAlbum = rels.find(r => isAlbum(r));
+  return anyAlbum || rels[0];
 }
 
 /**
- * Fetch the front cover art URL for a given release ID.
+ * Try both release and release-group Cover Art Archive endpoints.
  */
-async function fetchCoverArt(releaseId) {
-  if (!releaseId) return null;
-  const url = `https://coverartarchive.org/release/${releaseId}`;
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    const front = data.images?.find(img => img.front);
-    return front?.image || null;
-  } catch {
-    return null;
+async function fetchCoverArt(releaseId, releaseGroupId = null) {
+  const endpoints = [
+    `https://coverartarchive.org/release/${releaseId}/front`,
+    releaseGroupId && `https://coverartarchive.org/release-group/${releaseGroupId}/front`
+  ].filter(Boolean);
+
+  for (const url of endpoints) {
+    const art = await fetchAlbumArtFromUrl(url);
+    if (art) return art.url;
   }
+  return null;
 }
 
 /**
- * Get album info (name, year, cover URL, MBID) for a recording.
- * If recordingMbid is provided, fetch the exact recording; otherwise use text search.
+ * High-level: Get clean album info (name, year, cover, MBIDs).
+ * If recordingMbid is given, fetch that exact recording first.
+ * Otherwise fall back to text search.
  */
 async function getOfficialAlbumInfo(artist, title, year = "", recordingMbid = "") {
   let recording = null;
 
-  // 1) If we have a recording MBID, fetch that exact recording
   if (recordingMbid) {
     recording = await fetchRecordingByMBID(recordingMbid);
   }
-
-  // 2) Otherwise, search by text
   if (!recording) {
     const recs = await searchRecording(artist, title, year);
     recording = recs[0] || null;
   }
-
   if (!recording) return null;
 
   const release = findBestRelease(recording, year);
   if (!release) return null;
 
-  const albumName   = release.title;
-  const releaseYear = release.date?.slice(0, 4) || "";
-  const coverUrl    = await fetchCoverArt(release.id);
+  const albumName       = release.title;
+  const releaseYear     = release.date?.slice(0,4) || "";
+  const coverUrl        = await fetchCoverArt(release.id, release["release-group"]?.id);
 
   return {
     album: albumName,
@@ -116,21 +114,22 @@ async function getOfficialAlbumInfo(artist, title, year = "", recordingMbid = ""
 
 /**
  * Fallback cover-art search using final metadata.
- * Tries text-search for recordings, then matches album/title.
+ * Searches recordings textually, then matches album/title and fetches art.
  */
 async function getCoverArtByMetadata(artist, title, album, year = "") {
   const recs = await searchRecording(artist, title, year);
   for (const rec of recs) {
     const release = findBestRelease(rec, year);
     if (!release) continue;
-    const matchAlbum = release.title.toLowerCase() === album.toLowerCase()
-                    || release.title.toLowerCase().includes(album.toLowerCase());
-    if (matchAlbum) {
-      const coverUrl = await fetchCoverArt(release.id);
+
+    const relTitle = release.title.toLowerCase();
+    const want     = album.toLowerCase();
+    if (relTitle === want || relTitle.includes(want)) {
+      const coverUrl = await fetchCoverArt(release.id, release["release-group"]?.id);
       if (coverUrl) {
         return {
           album: release.title,
-          year: release.date?.slice(0, 4) || year,
+          year: release.date?.slice(0,4) || year,
           coverUrl,
           releaseId: release.id,
           recordingMbid: rec.id
