@@ -8,7 +8,7 @@ const fetch = require("../utils/fetch");
 const logger = require("../utils/logger");
 const {
   getFingerprintCandidates
-} = require("../utils/fingerprint");                // updated
+} = require("../utils/fingerprint");
 const { extractOriginalMetadata } = require("../utils/metadataExtractor");
 const { scoreFusionMatch } = require("../utils/fusionScorer");
 const { cleanupFiles } = require("../utils/cleanupUploads");
@@ -49,7 +49,7 @@ async function handleTagging(filePath) {
   logger.log(`🔍 [START] ${filePath}`);
 
   // 1) Extract original tags & fingerprint candidates
-  const original = await extractOriginalMetadata(filePath);
+  const original   = await extractOriginalMetadata(filePath);
   logger.log("📂 Original metadata:", original);
 
   const candidates = await getFingerprintCandidates(filePath);
@@ -58,7 +58,9 @@ async function handleTagging(filePath) {
     return { success: false, message: "No match found." };
   }
 
-  let chosen = null, fusion = null;
+  let chosen = null;
+  let fusion = null;
+
   // 2) Iterate candidates, run fusion score, pick first strong match
   for (const cand of candidates) {
     const { method, score, recording } = cand;
@@ -71,53 +73,55 @@ async function handleTagging(filePath) {
     // lookup album by MBID or text
     const lookupYear = original.year || recording.date || "";
     const albumData  = await getOfficialAlbumInfo(artist, title, lookupYear, recording.mbid);
-    const album      = sanitize(normalizeTitle(albumData?.album || recording.album || original.album || "Unknown Album"));
+    const album      = sanitize(
+      normalizeTitle(albumData?.album || recording.album || original.album || "Unknown Album")
+    );
     const year       = albumData?.year || recording.date || original.year || "2023";
     const genre      = recording.genre || original.genre || "";
 
     const finalMetadata = { title, artist, album, year, genre, score, source: method };
 
     fusion = scoreFusionMatch(filePath, finalMetadata, original);
-    logger.log(`📊 Candidate [${method}] fingerprint:${score} → fusion ${fusion.score} (${fusion.confidence})`);
+    logger.log(
+      `📊 Candidate [${method}] fingerprint:${score} → fusion ${fusion.score} (${fusion.confidence})`
+    );
     logger.log("🔬 Fusion debug:", fusion.debug);
 
     // require at least medium confidence
     if (fusion.score >= 0.6) {
-      chosen = { cand, finalMetadata, fusion, albumData };
+      chosen = { cand, finalMetadata, fusionResult: fusion, albumData };
       break;
     }
   }
 
-  // 3) if no medium match, accept the best-highest fusion if above 0.5
+  // 3) if no medium match, accept the best‐scoring fusion ≥0.5
   if (!chosen) {
     const best = candidates
       .map(c => {
-        const rawTitle  = c.recording.title;
-        const rawArtist = c.recording.artist;
-        const title  = sanitize(normalizeTitle(rawTitle));
-        const artist = sanitize(normalizeTitle(rawArtist));
-        const lookupYear = original.year || c.recording.date || "";
+        const { recording: rec, score: sc, method: mth } = c;
+        const title  = sanitize(normalizeTitle(rec.title));
+        const artist = sanitize(normalizeTitle(rec.artist));
         return {
           cand: c,
           finalMetadata: {
             title,
             artist,
-            album: sanitize(normalizeTitle(original.album || c.recording.album)),
-            year: original.year || c.recording.date,
-            genre: c.recording.genre || original.genre,
-            score: c.score,
-            source: c.method
+            album: sanitize(normalizeTitle(original.album || rec.album)),
+            year: original.year || rec.date,
+            genre: rec.genre || original.genre,
+            score: sc,
+            source: mth
           }
         };
       })
       .map(o => ({
         ...o,
-        fusion: scoreFusionMatch(filePath, o.finalMetadata, original)
+        fusionResult: scoreFusionMatch(filePath, o.finalMetadata, original)
       }))
-      .sort((a,b) => b.fusion.score - a.fusion.score)[0];
+      .sort((a, b) => b.fusionResult.score - a.fusionResult.score)[0];
 
-    if (best.fusion.score >= 0.5) {
-      logger.warn(`⚠️ No medium‐confidence, accepting lower fusion ${best.fusion.score}`);
+    if (best.fusionResult.score >= 0.5) {
+      logger.warn(`⚠️ No medium‐confidence, accepting lower fusion ${best.fusionResult.score}`);
       chosen = best;
     }
   }
@@ -128,8 +132,7 @@ async function handleTagging(filePath) {
   }
 
   // unpack chosen
-  const { cand, finalMetadata, fusion, albumData } = chosen;
-  const { recording } = cand;
+  const { cand, finalMetadata, albumData, fusionResult } = chosen;
   const coverUrl       = albumData?.coverUrl || "";
 
   logger.log(`✅ [MATCH] ${finalMetadata.artist} — ${finalMetadata.title}`);
@@ -137,7 +140,7 @@ async function handleTagging(filePath) {
 
   // 4) Build ffmpeg arguments
   const inputs = [`-i "${filePath}"`];
-  const maps   = [`-map 0:a`];
+  const maps   = [`-map 0:a`]; // only audio stream
   const coverPath = path.join(dir, `${base}-cover.jpg`);
   let embeddedCover = false;
 
@@ -155,6 +158,7 @@ async function handleTagging(filePath) {
       logger.warn(`⚠️ Cover embed failed: ${err.message}`);
     }
   }
+
   // fallback cover
   if (!embeddedCover) {
     try {
@@ -178,13 +182,14 @@ async function handleTagging(filePath) {
     }
   }
 
+  // 5) FFmpeg metadata & codec args
   const metadataArgs = [
     `-metadata title="${finalMetadata.title}"`,
     `-metadata artist="${finalMetadata.artist}"`,
     `-metadata album="${finalMetadata.album}"`,
     `-metadata date="${finalMetadata.year}"`,
     finalMetadata.genre ? `-metadata genre="${sanitize(finalMetadata.genre)}"` : "",
-    `-metadata comment="MetaTune | fusion:${fusion.score}(${fusion.confidence})"`
+    `-metadata comment="MetaTune | fusion:${fusionResult.score}(${fusionResult.confidence})"`
   ].filter(Boolean);
 
   const codecArgs = embeddedCover
@@ -203,20 +208,21 @@ async function handleTagging(filePath) {
   ];
   const cmd = `ffmpeg ${ffArgs.join(" ")}`;
 
-  // 5) Run & finalize
+  // 6) Run & finalize
   try {
     await runCommand(cmd);
 
+    // write debug logs
     fs.writeFileSync(debugPath, JSON.stringify({
       chosenCandidate: cand,
       original,
       albumData,
       finalMetadata,
-      fusion
+      fusion: fusionResult
     }, null, 2));
     fs.writeFileSync(publicLogPath, JSON.stringify({
       finalMetadata,
-      fusion
+      fusion: fusionResult
     }, null, 2));
 
     logger.log(`✅ [DONE] Saved: ${output}`);
@@ -233,7 +239,7 @@ async function handleTagging(filePath) {
   }
 }
 
-// expose as Express handlers
+// Express handlers
 
 async function processFile(req, res) {
   if (!req.file) {
