@@ -1,108 +1,57 @@
-// utils/logger.js
-
 const fs = require("fs");
 const path = require("path");
 
-const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5 MB
 const DEBUG = process.env.DEBUG_LOGGING === "true";
+const LOG_DIR = path.join(__dirname, "..", "logs");
+const STATS_FILE = path.join(__dirname, "..", "cache", "fingerprintStats.json");
+const MATCH_LOG_FILE = path.join(LOG_DIR, "match-log.json");
 
-const logDir = path.join(__dirname, "..", "cache");
-if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+function timestamp() {
+  return new Date().toISOString().replace("T", " ").split(".")[0];
+}
 
-const logFile = path.join(logDir, "fingerprintLog.json");
-const errorFile = path.join(logDir, "errors.log");
-const statsFile = path.join(logDir, "fingerprintStats.json");
+function log(...args) {
+  if (DEBUG) console.log(`[${timestamp()}]`, ...args);
+}
 
-function rotateIfTooLarge(filePath) {
+function warn(...args) {
+  console.warn(`⚠️ [${timestamp()}]`, ...args);
+}
+
+function error(...args) {
+  console.error(`❌ [${timestamp()}]`, ...args);
+}
+
+function logMatch(metadata) {
+  if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
   try {
-    if (fs.existsSync(filePath)) {
-      const stat = fs.statSync(filePath);
-      if (stat.size > MAX_LOG_SIZE) {
-        const backupName = `${filePath}.${Date.now()}.bak`;
-        fs.renameSync(filePath, backupName);
-        fs.writeFileSync(filePath, filePath.endsWith(".json") ? "[]" : ""); // reset
-      }
-    }
+    fs.writeFileSync(MATCH_LOG_FILE, JSON.stringify(metadata, null, 2));
   } catch (e) {
-    console.warn(`⚠️ Log rotation failed: ${e.message}`);
+    warn("Failed to write match log:", e.message);
   }
 }
 
-function logMatch(data) {
-  if (!DEBUG) return;
-
-  rotateIfTooLarge(logFile);
-  const entry = {
-    timestamp: new Date().toISOString(),
-    ...data,
-  };
-
-  let logs = [];
+function updateStats({ source = "unknown", success = false }) {
   try {
-    if (fs.existsSync(logFile)) {
-      logs = JSON.parse(fs.readFileSync(logFile, "utf-8")) || [];
+    if (!fs.existsSync(STATS_FILE)) {
+      fs.writeFileSync(STATS_FILE, JSON.stringify({}));
     }
-  } catch (_) {}
-
-  logs.push(entry);
-  fs.writeFileSync(logFile, JSON.stringify(logs, null, 2));
-}
-
-function logError(error) {
-  if (!DEBUG) return;
-
-  rotateIfTooLarge(errorFile);
-  const entry = `[${new Date().toISOString()}] ${error}\n`;
-  fs.appendFileSync(errorFile, entry);
-}
-
-function updateStats({ source, success }) {
-  if (!DEBUG) return;
-
-  rotateIfTooLarge(statsFile);
-
-  let stats = {
-    total: 0,
-    matched: 0,
-    failed: 0,
-    bySource: {}
-  };
-
-  try {
-    if (fs.existsSync(statsFile)) {
-      stats = JSON.parse(fs.readFileSync(statsFile, "utf-8")) || stats;
+    const stats = JSON.parse(fs.readFileSync(STATS_FILE, "utf-8"));
+    if (!stats[source]) {
+      stats[source] = { total: 0, success: 0 };
     }
-  } catch (_) {}
-
-  stats.total += 1;
-  if (success) {
-    stats.matched += 1;
-    stats.bySource[source] = (stats.bySource[source] || 0) + 1;
-  } else {
-    stats.failed += 1;
+    stats[source].total++;
+    if (success) stats[source].success++;
+    fs.writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2));
+  } catch (err) {
+    warn("Failed to update fingerprint stats:", err.message);
   }
-
-  fs.writeFileSync(statsFile, JSON.stringify(stats, null, 2));
-}
-
-// 🔧 General purpose log/warn/error
-function log(msg) {
-  if (DEBUG) console.log(msg);
-}
-
-function warn(msg) {
-  if (DEBUG) console.warn(msg);
-}
-
-function error(msg) {
-  if (DEBUG) console.error(msg);
 }
 
 module.exports = {
-  logMatch,
-  logError,
-  updateStats,
   log,
   warn,
   error,
+  logMatch,
+  updateStats,
 };
