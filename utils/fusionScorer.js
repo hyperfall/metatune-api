@@ -8,6 +8,7 @@ function normalize(str) {
 }
 
 function extractNameFromFilename(filePath) {
+  if (!filePath || typeof filePath !== "string") return "";
   const base = path.basename(filePath, path.extname(filePath));
   return normalize(base);
 }
@@ -24,9 +25,9 @@ function computeTextMatchScore(a, b) {
  * - Match confidence from fingerprint
  */
 function scoreFusionMatch({
-  filePath,
-  match,           // { title, artist, album, score }
-  embeddedTags = {} // { title, artist }
+  filePath = "",
+  match = {},           // { title, artist, album, score }
+  embeddedTags = {}     // { title, artist }
 }) {
   const fileName = extractNameFromFilename(filePath);
   const normMatch = {
