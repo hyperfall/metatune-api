@@ -1,7 +1,7 @@
 // utils/fetchAlbumArtByMetadata.js
 const fetch = require("./fetch");
 
-async function fetchAlbumArtByMetadata(artist, title, album) {
+async function getCoverArtByMetadata(artist, title, album) {
   const query = `${artist} ${album}`.replace(/\s+/g, "+").toLowerCase();
   const searchUrl = `https://musicbrainz.org/ws/2/release/?query=artist:${artist} AND release:${album}&fmt=json&limit=5`;
 
@@ -28,4 +28,4 @@ async function fetchAlbumArtByMetadata(artist, title, album) {
   }
 }
 
-module.exports = { fetchAlbumArtByMetadata };
+module.exports = { getCoverArtByMetadata };
