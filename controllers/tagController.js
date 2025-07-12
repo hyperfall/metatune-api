@@ -19,7 +19,41 @@ function sanitize(input) {
   return input ? input.replace(/[\/:*?"<>|]/g, "_").trim() : "Unknown";
 }
 
-async function processFile(filePath) {
+async function processFile(req, res) {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: "No file uploaded." });
+
+  try {
+    const result = await handleTagging(file.path);
+    res.json(result);
+  } catch (err) {
+    logError(`processFile failed: ${err.message}`);
+    res.status(500).json({ success: false, message: "Internal server error." });
+  }
+}
+
+async function processBatch(req, res) {
+  const files = req.files;
+  if (!files || files.length === 0) {
+    return res.status(400).json({ error: "No files uploaded." });
+  }
+
+  const results = [];
+  for (const file of files) {
+    try {
+      const result = await handleTagging(file.path);
+      results.push(result);
+    } catch (err) {
+      logError(`processBatch failed on ${file.originalname}: ${err.message}`);
+      results.push({ success: false, file: file.originalname, error: err.message });
+    }
+  }
+
+  res.json({ batch: true, count: results.length, results });
+}
+
+// 🔁 Core logic used by both single & batch handlers
+async function handleTagging(filePath) {
   const extension = path.extname(filePath);
   const baseName = path.basename(filePath, extension);
   const dir = path.dirname(filePath);
@@ -114,4 +148,7 @@ async function processFile(filePath) {
   };
 }
 
-module.exports = { processFile };
+module.exports = {
+  processFile,
+  processBatch
+};
