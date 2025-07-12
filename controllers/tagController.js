@@ -18,9 +18,9 @@ const {
 } = require("../utils/musicbrainzHelper");
 const normalizeTitle = require("../utils/normalizeTitle");
 
-function runCommand(command) {
+function runCommand(cmd) {
   return new Promise((resolve, reject) => {
-    exec(command, { maxBuffer: 1024 * 2000 }, (err, stdout, stderr) => {
+    exec(cmd, { maxBuffer: 1024 * 2000 }, (err, stdout, stderr) => {
       if (err) return reject(stderr || stdout);
       resolve(stdout.trim());
     });
@@ -71,32 +71,26 @@ async function handleTagging(filePath, attempt = 1) {
   const title  = sanitize(normalizeTitle(rawTitle));
   const artist = sanitize(normalizeTitle(rawArtist));
 
-  // 2) Extract original file metadata
+  // 2) Extract original metadata
   const original = await extractOriginalMetadata(filePath);
   logger.log("📂 Original metadata:", original);
 
   // 3) Official album lookup with year hint
   const lookupYear = original.year || rec.date || "";
   const albumData  = await getOfficialAlbumInfo(artist, title, lookupYear);
-  logger.log(
-    `🔎 Album lookup →`,
-    albumData?.album || "<none>"
-  );
+  logger.log(`🔎 Album lookup →`, albumData?.album || "<none>");
 
   const album    = sanitize(
     normalizeTitle(
-      albumData?.album ||
-      original.album ||
-      rec.album ||
-      "Unknown Album"
+      albumData?.album || original.album || rec.album || "Unknown Album"
     )
   );
-  const year     = albumData?.year || original.year || rec.date || "2023";
+  const year     = albumData?.year    || original.year || rec.date || "2023";
   const coverUrl = albumData?.coverUrl || "";
-  const genre    = rec.genre || original.genre || "";
+  const genre    = rec.genre          || original.genre || "";
 
-  const score  = match.score || 0;
-  const source = match.method  || "unknown";
+  const score  = match.score  || 0;
+  const source = match.method || "unknown";
 
   const finalMetadata = { title, artist, album, year, genre, score, source };
 
@@ -114,7 +108,7 @@ async function handleTagging(filePath, attempt = 1) {
   logger.log(`✅ [MATCH] ${artist} — ${title}`);
   logger.log(`💽 Album: ${album} | 📆 Year: ${year}`);
 
-  // 5) Build ffmpeg args
+  // 5) Build ffmpeg inputs & maps
   const inputs = [`-i "${filePath}"`];
   const maps   = [`-map 0:a`]; // only audio stream
   let embeddedCover = false;
@@ -154,6 +148,7 @@ async function handleTagging(filePath, attempt = 1) {
     }
   }
 
+  // 6) Metadata and codec arguments
   const metadataArgs = [
     `-metadata title="${title}"`,
     `-metadata artist="${artist}"`,
@@ -167,22 +162,16 @@ async function handleTagging(filePath, attempt = 1) {
     ? ["-c copy"]
     : ["-c:a libmp3lame", "-b:a 192k"];
 
+  // 7) Assemble & run ffmpeg
   const taggedName = `${artist} - ${title}${ext}`;
   const output     = path.join(dir, taggedName);
+  const ffArgs     = [...inputs, ...maps, ...metadataArgs, ...codecArgs, `-y "${output}"`];
+  const cmd        = `ffmpeg ${ffArgs.join(" ")}`;
 
-  const ffArgs = [
-    ...inputs,
-    ...maps,
-    ...metadataArgs,
-    ...codecArgs,
-    `-y "${output}"`
-  ];
-  const cmd = `ffmpeg ${ffArgs.join(" ")}`;
-
-  // 6) Run ffmpeg and finalize
   try {
     await runCommand(cmd);
 
+    // write debug logs
     fs.writeFileSync(debugPath, JSON.stringify(
       { match, original, albumData, finalMetadata, fusion },
       null, 2
@@ -206,7 +195,8 @@ async function handleTagging(filePath, attempt = 1) {
   }
 }
 
-// Express routes
+// Express handlers
+
 async function processFile(req, res) {
   if (!req.file) {
     return res.status(400).json({ success: false, message: "No file uploaded" });
