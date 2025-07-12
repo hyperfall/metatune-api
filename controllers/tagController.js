@@ -26,10 +26,18 @@ async function handleTagging(filePath) {
 
   log(`🔍 [START] Processing file: ${filePath}`);
 
-  const match = await getBestFingerprintMatch(filePath);
+  let match;
+  try {
+    match = await getBestFingerprintMatch(filePath);
+  } catch (err) {
+    logError(`❌ [FINGERPRINT ERROR] ${err}`);
+    return { success: false, message: "Fingerprinting failed." };
+  }
+
   if (!match || !match.recording) {
     warn(`❌ [MISS] No match found for: ${filePath}`);
     updateStats({ success: false });
+    cleanupFile(filePath);
     return { success: false, message: "Track could not be identified." };
   }
 
@@ -50,7 +58,7 @@ async function handleTagging(filePath) {
   log(`📆 Year: ${year}`);
   log(`📊 Confidence Score: ${score}`);
 
-  // FFmpeg base args
+  // FFmpeg args
   const args = [
     `-i "${filePath}"`,
     `-metadata title="${title}"`,
@@ -63,8 +71,9 @@ async function handleTagging(filePath) {
   ];
 
   // Cover art
+  let coverPath = null;
   if (r.coverArt) {
-    const coverPath = path.join(dir, "cover.jpg");
+    coverPath = path.join(dir, "cover.jpg");
     try {
       const img = await fetch(r.coverArt);
       const buf = await img.arrayBuffer();
@@ -81,7 +90,6 @@ async function handleTagging(filePath) {
     await runCommand(ffmpegCmd);
     log(`✅ [DONE] Tagged file saved as: ${outputPath}`);
 
-    // Store JSON metadata
     const metaPath = path.join("cache", `${baseName}.json`);
     fs.writeFileSync(metaPath, JSON.stringify({
       title, artist, album, year, source: match.method, score
@@ -90,12 +98,13 @@ async function handleTagging(filePath) {
     logMatch({
       input: path.basename(filePath),
       output: taggedName,
-      title, artist, album, year,
-      score,
+      title, artist, album, year, score,
       source: match.method
     });
 
     updateStats({ success: true, source: match.method });
+    cleanupFile(filePath);
+    if (coverPath) cleanupFile(coverPath);
 
     return {
       success: true,
@@ -106,7 +115,17 @@ async function handleTagging(filePath) {
   } catch (err) {
     logError(`❌ [ERROR] FFmpeg failed on ${filePath}: ${err}`);
     updateStats({ success: false });
+    cleanupFile(filePath);
+    if (coverPath) cleanupFile(coverPath);
     return { success: false, message: "Tagging failed." };
+  }
+}
+
+function cleanupFile(filePath) {
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch (e) {
+    warn(`⚠️ Failed to delete file: ${filePath}`);
   }
 }
 
