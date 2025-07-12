@@ -60,13 +60,9 @@ async function handleTagging(filePath, attempt = 1) {
 
   const r = match.recording;
 
-  const rawTitle = r.title || baseName;
-  const rawArtist = r.artist || "Unknown Artist";
-  const rawAlbum = r.album || r.release || "Unknown Album";
-
-  const title = sanitize(normalizeTitle(rawTitle));
-  const artist = sanitize(normalizeTitle(rawArtist));
-  const album = sanitize(normalizeTitle(rawAlbum));
+  const title = sanitize(normalizeTitle(r.title || baseName));
+  const artist = sanitize(normalizeTitle(r.artist || "Unknown Artist"));
+  const album = sanitize(normalizeTitle(r.album || r.release || "Unknown Album"));
   const year = r.date || "2023";
   const genre = r.genre || "";
   const score = match.score || 0;
@@ -93,16 +89,15 @@ async function handleTagging(filePath, attempt = 1) {
     `-y "${outputPath}"`
   ].filter(Boolean);
 
-  if (r.mbid) {
+  // Handle embedded cover art if available
+  if (r.coverArt) {
     try {
-      const art = await fetchAlbumArt(r.mbid);
-      if (art?.imageBuffer) {
-        fs.writeFileSync(coverPath, art.imageBuffer);
-        args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
-        logger.log(`🖼️ Cover art embedded from MusicBrainz`);
-      }
+      const imageBuffer = Buffer.from(r.coverArt.split(",")[1], "base64");
+      fs.writeFileSync(coverPath, imageBuffer);
+      args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
+      logger.log(`🖼️ Cover art embedded from metadata`);
     } catch (e) {
-      logger.warn(`⚠️ Cover art fetch failed: ${e.message}`);
+      logger.warn(`⚠️ Failed to attach embedded cover art: ${e.message}`);
     }
   }
 
