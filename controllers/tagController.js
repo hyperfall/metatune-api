@@ -32,7 +32,6 @@ function getConfidenceLevel(score) {
 }
 
 async function handleTagging(filePath, attempt = 1) {
-  // 🔒 Safety: ensure the uploaded file actually exists
   if (!fs.existsSync(filePath)) {
     logger.error(`❌ File does not exist: ${filePath}`);
     return { success: false, message: "Uploaded file missing on disk." };
@@ -68,14 +67,23 @@ async function handleTagging(filePath, attempt = 1) {
   const title = sanitize(normalizeTitle(r.title || baseName));
   const artist = sanitize(normalizeTitle(r.artist || "Unknown Artist"));
 
-  // 🔍 Fallback to MusicBrainz for accurate album & cover
+  // 🔍 Fallback to MusicBrainz
   const fallback = await getOfficialAlbumInfo(artist, title);
-  if (fallback && r.album && fallback.album !== r.album) {
+
+  // ❗ Trigger fallback override if ACR metadata is suspicious
+  const isSuspicious =
+    !r.album || r.album === r.title ||
+    r.artist?.toLowerCase().includes("boino") ||
+    r.album?.toLowerCase().includes("various artists");
+
+  if (fallback && (isSuspicious || fallback.album !== r.album)) {
     logger.logFallbackInfo({ album: r.album }, fallback);
+    r.album = fallback.album;
+    r.date = fallback.year;
   }
 
-  const album = sanitize(normalizeTitle(fallback?.album || r.album || r.release || "Unknown Album"));
-  const year = fallback?.year || r.date || "2023";
+  const album = sanitize(normalizeTitle(r.album || "Unknown Album"));
+  const year = r.date || "2023";
   const genre = r.genre || "";
   const score = match.score || 0;
   const source = match.method || "unknown";
@@ -101,17 +109,19 @@ async function handleTagging(filePath, attempt = 1) {
     `-y "${outputPath}"`
   ].filter(Boolean);
 
-  // 🖼️ Embed fallback cover art if available
+  // 🖼️ Embed only fallback-provided album art
   if (fallback?.coverUrl) {
     try {
       const res = await fetch(fallback.coverUrl);
-      const imageBuffer = await res.buffer();
-      fs.writeFileSync(coverPath, imageBuffer);
+      const arrayBuffer = await res.arrayBuffer(); // 🚫 No deprecation warning
+      fs.writeFileSync(coverPath, Buffer.from(arrayBuffer));
       args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
       logger.log(`🖼️ Cover art embedded from MusicBrainz`);
     } catch (e) {
       logger.warn(`⚠️ Failed to fetch or embed cover art: ${e.message}`);
     }
+  } else {
+    logger.warn(`⚠️ No fallback cover art available.`);
   }
 
   try {
