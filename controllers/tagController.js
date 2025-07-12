@@ -24,7 +24,7 @@ function runCommand(command) {
 }
 
 function sanitize(str) {
-  return str ? str.replace(/[\/:*?"<>|]/g, "_").trim() : "Unknown";
+  return str ? str.replace(/[\\/:*?"<>|]/g, "_").trim() : "Unknown";
 }
 
 function getConfidenceLevel(score) {
@@ -82,10 +82,14 @@ async function handleTagging(filePath, attempt = 1) {
   const finalMetadata = { title, artist, album, year, genre, score, source, confidence };
 
   const original = await extractOriginalMetadata(filePath);
-  const fusionScore = scoreFusionMatch(original, finalMetadata);
+  const fusionScore = scoreFusionMatch({
+    filePath,
+    match: finalMetadata,
+    embeddedTags: original
+  });
 
-  if (fusionScore < 0.5) {
-    logger.warn(`❌ [FUSION FAIL] Score ${fusionScore} < 0.5. Skipping file.`);
+  if (fusionScore.score < 0.5) {
+    logger.warn(`❌ [FUSION FAIL] Score ${fusionScore.score} < 0.5. Skipping file.`);
     return { success: false, message: "Metadata mismatch." };
   }
 
@@ -95,7 +99,7 @@ async function handleTagging(filePath, attempt = 1) {
   logger.log(`✅ [MATCH] ${title} by ${artist}`);
   logger.log(`💽 Album: ${album} | 📆 Year: ${year} | 🎼 Genre: ${genre || "N/A"}`);
   logger.log(`📊 Score: ${score} | 🔎 Source: ${source} | 🔐 Confidence: ${confidence}`);
-  logger.log(`🧠 Fusion Score: ${fusionScore}`);
+  logger.log(`🧠 Fusion Score: ${fusionScore.score} (${fusionScore.confidence})`);
 
   let args = [
     `-i "${filePath}"`,
@@ -104,7 +108,7 @@ async function handleTagging(filePath, attempt = 1) {
     `-metadata album="${album}"`,
     `-metadata date="${year}"`,
     genre ? `-metadata genre="${sanitize(genre)}"` : "",
-    `-metadata comment="Tagged by MetaTune | Fusion Score: ${fusionScore}"`,
+    `-metadata comment="Tagged by MetaTune | Score: ${fusionScore.score} (${fusionScore.confidence})"`,
     `-c:a libmp3lame`,
     `-b:a 192k`,
     `-y "${output}"`
