@@ -50,20 +50,31 @@ function findBestRelease(recording, year = "") {
   const rels = recording.releases || [];
   const isAlbum = r => r["release-group"]?.["primary-type"] === "Album";
   const notComp = r => !/hits|best|collection|playlist|various|compilation|nrj/i.test(r.title);
-  const officialAlbums = rels.filter(r => r.status === "Official" && isAlbum(r) && notComp(r));
 
-  // exact year
+  // filter official + album + not compilation
+  const officialAlbums = rels.filter(r =>
+    r.status === "Official" &&
+    isAlbum(r) &&
+    notComp(r)
+  );
+
+  // exact year match
   if (year && YEAR_REGEX.test(year)) {
     const exact = officialAlbums.find(r => r.date?.startsWith(year));
     if (exact) return exact;
   }
-  if (officialAlbums.length)       return officialAlbums[0];
+  if (officialAlbums.length) {
+    return officialAlbums[0];
+  }
+
+  // fallback: any album‐type release
   const anyAlbum = rels.find(r => isAlbum(r));
-  return anyAlbum || rels[0];
+  return anyAlbum || rels[0] || null;
 }
 
 /**
- * Try both release and release-group Cover Art Archive endpoints.
+ * Try both release and release‐group Cover Art Archive endpoints.
+ * Returns the front‐cover URL or null.
  */
 async function fetchCoverArt(releaseId, releaseGroupId = null) {
   const endpoints = [
@@ -73,34 +84,43 @@ async function fetchCoverArt(releaseId, releaseGroupId = null) {
 
   for (const url of endpoints) {
     const art = await fetchAlbumArtFromUrl(url);
-    if (art) return art.url;
+    if (art?.url) {
+      return art.url;
+    }
   }
   return null;
 }
 
 /**
- * High-level: Get clean album info (name, year, cover, MBIDs).
+ * High‐level: Get clean album info (name, year, coverUrl, MBIDs).
  * If recordingMbid is given, fetch that exact recording first.
  * Otherwise fall back to text search.
  */
 async function getOfficialAlbumInfo(artist, title, year = "", recordingMbid = "") {
   let recording = null;
 
+  // 1) MBID lookup if available
   if (recordingMbid) {
     recording = await fetchRecordingByMBID(recordingMbid);
   }
+
+  // 2) fallback to text search
   if (!recording) {
     const recs = await searchRecording(artist, title, year);
     recording = recs[0] || null;
   }
   if (!recording) return null;
 
+  // 3) pick best release
   const release = findBestRelease(recording, year);
   if (!release) return null;
 
   const albumName       = release.title;
-  const releaseYear     = release.date?.slice(0,4) || "";
-  const coverUrl        = await fetchCoverArt(release.id, release["release-group"]?.id);
+  const releaseYear     = release.date?.slice(0, 4) || "";
+  const coverUrl        = await fetchCoverArt(
+    release.id,
+    release["release-group"]?.id
+  );
 
   return {
     album: albumName,
@@ -113,7 +133,7 @@ async function getOfficialAlbumInfo(artist, title, year = "", recordingMbid = ""
 }
 
 /**
- * Fallback cover-art search using final metadata.
+ * Fallback cover‐art search using final metadata.
  * Searches recordings textually, then matches album/title and fetches art.
  */
 async function getCoverArtByMetadata(artist, title, album, year = "") {
@@ -125,11 +145,14 @@ async function getCoverArtByMetadata(artist, title, album, year = "") {
     const relTitle = release.title.toLowerCase();
     const want     = album.toLowerCase();
     if (relTitle === want || relTitle.includes(want)) {
-      const coverUrl = await fetchCoverArt(release.id, release["release-group"]?.id);
+      const coverUrl = await fetchCoverArt(
+        release.id,
+        release["release-group"]?.id
+      );
       if (coverUrl) {
         return {
           album: release.title,
-          year: release.date?.slice(0,4) || year,
+          year: release.date?.slice(0, 4) || year,
           coverUrl,
           releaseId: release.id,
           recordingMbid: rec.id
