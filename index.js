@@ -1,7 +1,9 @@
+/* ========================= index.js ========================= */
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const compression = require("compression");
 const multer = require("multer");
 const dotenv = require("dotenv");
 const fs = require("fs");
@@ -12,6 +14,8 @@ dotenv.config();
 console.log(`🪵 Logging is ${process.env.DEBUG_LOGGING === "true" ? "ENABLED" : "DISABLED"}`);
 
 const app = express();
+app.set("trust proxy", true);
+
 const port = process.env.PORT || 3000;
 
 // ─── Security Middlewares ────────────────────────────────────────────────────
@@ -24,6 +28,8 @@ app.use(cors({
   origin: process.env.ALLOWED_ORIGIN?.split(",") || "*",
   exposedHeaders: ["Content-Disposition"],
 }));
+app.use(compression());
+app.use(express.json());
 
 // ─── Credentials Check ───────────────────────────────────────────────────────
 if (!process.env.ACR_HOST || !process.env.ACR_KEY || !process.env.ACR_SECRET)
@@ -123,6 +129,12 @@ process.on("exit", () => cleanupUploads(UPLOAD_DIR, 0));
 
 process.on("uncaughtException", err => console.error("💥 Uncaught Exception:", err));
 process.on("unhandledRejection", err => console.error("💥 Unhandled Rejection:", err));
+
+// ─── Global Error Handler ───────────────────────────────────────────────────
+app.use((err, req, res, next) => {
+  console.error('[Global Error]', err);
+  res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
+});
 
 // ─── Start Server ──────────────────────────────────────────────────────────
 const server = app.listen(port, () => {
