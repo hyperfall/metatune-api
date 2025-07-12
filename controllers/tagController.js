@@ -32,6 +32,12 @@ function getConfidenceLevel(score) {
 }
 
 async function handleTagging(filePath, attempt = 1) {
+  // 🔒 Safety: ensure the uploaded file actually exists
+  if (!fs.existsSync(filePath)) {
+    logger.error(`❌ File does not exist: ${filePath}`);
+    return { success: false, message: "Uploaded file missing on disk." };
+  }
+
   const extension = path.extname(filePath) || ".mp3";
   const baseName = path.basename(filePath, extension);
   const dir = path.dirname(filePath);
@@ -65,8 +71,8 @@ async function handleTagging(filePath, attempt = 1) {
   // 🔍 Fallback to MusicBrainz for accurate album & cover
   const fallback = await getOfficialAlbumInfo(artist, title);
   if (fallback && r.album && fallback.album !== r.album) {
-  logger.logFallbackInfo({ album: r.album }, fallback);
-}
+    logger.logFallbackInfo({ album: r.album }, fallback);
+  }
 
   const album = sanitize(normalizeTitle(fallback?.album || r.album || r.release || "Unknown Album"));
   const year = fallback?.year || r.date || "2023";
