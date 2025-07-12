@@ -131,7 +131,8 @@ async function handleTagging(filePath, attempt = 1) {
 
   if (!embeddedCover) {
     try {
-      const fallbackArt = await getCoverArtByMetadata(artist, title, album);
+      const fallbackArt = await getCoverArtByMetadata(artist, title, album, year);
+
       if (fallbackArt) {
         const res = await fetch(fallbackArt);
         const buf = await res.arrayBuffer();
