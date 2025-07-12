@@ -15,10 +15,12 @@ const ACR = new acrcloud({
   access_secret: process.env.ACR_SECRET,
 });
 
-/** Run fpcalc to extract duration & fingerprint */
+/**
+ * Run fpcalc to extract duration & fingerprint
+ */
 function runFpcalc(filePath) {
   return new Promise((resolve, reject) => {
-    exec(`fpcalc -json "${filePath}"`, (err, stdout) => {
+    exec(`fpcalc -json "${filePath}"`, { maxBuffer: 1024 * 2000 }, (err, stdout) => {
       if (err) return reject(err);
       try {
         resolve(JSON.parse(stdout));
@@ -29,36 +31,32 @@ function runFpcalc(filePath) {
   });
 }
 
-/** Heuristic for “compilation”-style album names */
+/**
+ * Heuristic for “compilation”-style album names
+ */
 function isCompilation(albumName) {
   const keywords = ["hits", "greatest", "now", "best", "compilation", "nrj"];
   return keywords.some(k => albumName?.toLowerCase().includes(k));
 }
 
-/** Fallback: text search on MusicBrainz if album looks like a compilation */
+/**
+ * Fallback: fetch album info via MusicBrainz helper when a compilation is detected
+ */
 async function queryMusicBrainzFallback(artist, title, prefix) {
   try {
-    const resp = await axios.get("https://musicbrainz.org/ws/2/recording", {
-      params: { query: `${title} AND artist:${artist}`, fmt: "json", limit: 5 },
-      headers: { "User-Agent": "MetaTune/1.0 (metatune@app)" }
-    });
-    const recs = resp.data.recordings || [];
-    const rec = recs.find(r => r.releases?.length) || recs[0];
-    if (!rec) return null;
-
-    const release = findBestRelease(rec);
-    if (!release) return null;
-
+    // Use robust MB lookup (MBID-first, then text search fallback without year)
+    const info = await getOfficialAlbumInfo(artist, title, "");
+    if (!info) return null;
     return {
       method: "musicbrainz-fallback",
       score: 100,
       recording: {
-        mbid: rec.id,
-        title: normalizeTitle(rec.title),
-        artist: rec["artist-credit"]?.map(a => a.name).join(", "),
-        album: normalizeTitle(release.title),
-        date: release.date?.slice(0, 4) || null,
-        releaseGroupMbid: release["release-group"]?.id,
+        mbid: info.recordingMbid,
+        title: normalizeTitle(title),
+        artist: normalizeTitle(artist),
+        album: normalizeTitle(info.album),
+        date: info.year,
+        releaseGroupMbid: info.releaseGroupMbid,
         genre: null
       }
     };
@@ -68,7 +66,9 @@ async function queryMusicBrainzFallback(artist, title, prefix) {
   }
 }
 
-/** Fingerprint lookup via AcoustID → MusicBrainz */
+/**
+ * Fingerprint lookup via AcoustID → MusicBrainz
+ */
 async function queryMusicBrainzByFingerprint(fp, prefix) {
   try {
     const resp = await axios.get("https://api.acoustid.org/v2/lookup", {
@@ -109,7 +109,9 @@ async function queryMusicBrainzByFingerprint(fp, prefix) {
   }
 }
 
-/** Primary ACRCloud lookup returning *all* hits */
+/**
+ * Primary ACRCloud lookup returning *all* hits
+ */
 async function queryAcrcloudAll(buffer, prefix) {
   try {
     const result = await ACR.identify(buffer);
@@ -140,7 +142,7 @@ async function queryAcrcloudAll(buffer, prefix) {
  * Returns ordered fingerprint candidates:
  * 1) ACRCloud hits (with compilation→fallback)
  * 2) AcoustID→MusicBrainz lookup
- * 3) Finally a pure text-only MusicBrainz lookup based on filename (Artist - Title)
+ * 3) Pure text-only MusicBrainz lookup based on filename (Artist - Title)
  */
 async function getFingerprintCandidates(filePath) {
   const fp = await runFpcalc(filePath);
@@ -155,7 +157,7 @@ async function getFingerprintCandidates(filePath) {
   for (const c of acrs) {
     c.recording.duration = fp.duration;
     if (isCompilation(c.recording.album)) {
-      logger.warn(`[fallback] Compilation detected (“${c.recording.album}”), text‐search…`);
+      logger.warn(`[fallback] Compilation detected (“${c.recording.album}”), using MB fallback…`);
       const fb = await queryMusicBrainzFallback(
         c.recording.artist,
         c.recording.title,
@@ -187,8 +189,9 @@ async function getFingerprintCandidates(filePath) {
         fileTitle.trim()
       );
       if (info) {
-        info.duration = fp.duration;
-        out.push(clean({ method: "text-only", score: 0, recording: info }));
+        const fallback = { method: "text-only", score: 0, recording: info };
+        fallback.recording.duration = fp.duration;
+        out.push(clean(fallback));
       }
     } catch (err) {
       logger.error(`[TextFallback] ${err.message}`);
