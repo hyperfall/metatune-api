@@ -80,6 +80,38 @@ async function getOfficialAlbumInfo(artist, title) {
   };
 }
 
+/**
+ * Use final metadata (artist, title, album) to find correct cover art.
+ */
+async function getCoverArtByMetadata(artist, title, album) {
+  const recordings = await searchRecording(artist, title);
+  for (const rec of recordings) {
+    const release = findBestRelease(rec);
+    if (!release) continue;
+
+    const match = release.title.toLowerCase() === album.toLowerCase() ||
+                  release.title.toLowerCase().includes(album.toLowerCase());
+
+    if (match) {
+      const coverUrl = await fetchCoverArt(release.id);
+      if (coverUrl) {
+        return {
+          album: release.title,
+          year: release.date?.slice(0, 4),
+          coverUrl,
+          releaseId: release.id
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
 module.exports = {
-  getOfficialAlbumInfo
+  getOfficialAlbumInfo,
+  searchRecording,
+  findBestRelease,
+  fetchCoverArt,
+  getCoverArtByMetadata
 };
