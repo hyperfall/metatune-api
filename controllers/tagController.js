@@ -20,7 +20,18 @@ function runCommand(command) {
 }
 
 function sanitize(input) {
-  return input ? input.replace(/[\/:*?"<>|]/g, "_").trim() : "Unknown";
+  if (!input) return "Unknown";
+  return input.replace(/[\/:*?"<>|]/g, "_").trim();
+}
+
+function normalizeText(text) {
+  return text
+    .replace(/\(official.*?\)/i, "")
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ")
+    .trim();
 }
 
 async function handleTagging(filePath, attempt = 1) {
@@ -51,10 +62,15 @@ async function handleTagging(filePath, attempt = 1) {
 
   const r = match.recording;
 
-  const title = sanitize(r.title || baseName);
-  const artist = sanitize(r.artist || "Unknown Artist");
-  const album = sanitize(r.album || r.release || "Unknown Album");
+  const rawTitle = r.title || baseName;
+  const rawArtist = r.artist || "Unknown Artist";
+  const rawAlbum = r.album || r.release || "Unknown Album";
+
+  const title = sanitize(normalizeText(rawTitle));
+  const artist = sanitize(normalizeText(rawArtist));
+  const album = sanitize(normalizeText(rawAlbum));
   const year = r.date || "2023";
+  const genre = r.genre || ""; // Optional
   const score = match.score || 0;
   const source = match.method || "unknown";
 
@@ -67,6 +83,7 @@ async function handleTagging(filePath, attempt = 1) {
   logger.log(`💽 Album: ${album}`);
   logger.log(`📆 Year: ${year}`);
   logger.log(`📊 Confidence Score: ${score}`);
+  if (genre) logger.log(`🎼 Genre: ${genre}`);
 
   let args = [
     `-i "${filePath}"`,
@@ -74,12 +91,12 @@ async function handleTagging(filePath, attempt = 1) {
     `-metadata artist="${artist}"`,
     `-metadata album="${album}"`,
     `-metadata date="${year}"`,
+    genre ? `-metadata genre="${sanitize(genre)}"` : "",
     `-c:a libmp3lame`,
     `-b:a 192k`,
     `-y "${outputPath}"`
-  ];
+  ].filter(Boolean); // Remove empty strings
 
-  // Try to embed cover art from MusicBrainz if possible
   if (r.mbid) {
     try {
       const art = await fetchAlbumArt(r.mbid);
@@ -98,11 +115,11 @@ async function handleTagging(filePath, attempt = 1) {
     await runCommand(ffmpegCmd);
     logger.log(`✅ [DONE] Tagged file saved as: ${outputPath}`);
 
-    const metadata = { title, artist, album, year, source, score };
+    const metadata = { title, artist, album, year, genre, source, score };
     fs.writeFileSync(debugJSON, JSON.stringify(metadata, null, 2));
     logger.logMatch(metadata);
     logger.updateStats({ source, success: true });
-    await logToDB?.(metadata); // optional database hook
+    await logToDB?.(metadata);
 
     cleanupFiles([filePath, coverPath]);
     return {
