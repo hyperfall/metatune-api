@@ -8,7 +8,7 @@ const { getBestFingerprintMatch } = require("../utils/fingerprint");
 const normalizeTitle = require("../utils/normalizeTitle");
 const { cleanupFiles } = require("../utils/cleanupUploads");
 const { logToDB } = require("../utils/db");
-const { zipFiles } = require("../utils/zipFiles");
+const { zipTaggedFiles } = require("../utils/zipFiles"); // ✅ Corrected import
 const { getOfficialAlbumInfo } = require("../utils/musicbrainzHelper");
 
 function runCommand(command) {
@@ -67,16 +67,16 @@ async function handleTagging(filePath, attempt = 1) {
   const title = sanitize(normalizeTitle(r.title || baseName));
   const artist = sanitize(normalizeTitle(r.artist || "Unknown Artist"));
 
-  // 🔍 Fallback to MusicBrainz
+  // 🔍 Fallback to MusicBrainz for album correction
   const fallback = await getOfficialAlbumInfo(artist, title);
 
-  // ❗ Trigger fallback override if ACR metadata is suspicious
-  const isSuspicious =
-    !r.album || r.album === r.title ||
-    r.artist?.toLowerCase().includes("boino") ||
-    r.album?.toLowerCase().includes("various artists");
+  const suspicious =
+    !r.album ||
+    r.album === r.title ||
+    /boino|nrj|compilation|various/i.test(r.album || "") ||
+    /boino/i.test(artist || "");
 
-  if (fallback && (isSuspicious || fallback.album !== r.album)) {
+  if (fallback && (suspicious || fallback.album !== r.album)) {
     logger.logFallbackInfo({ album: r.album }, fallback);
     r.album = fallback.album;
     r.date = fallback.year;
@@ -109,12 +109,11 @@ async function handleTagging(filePath, attempt = 1) {
     `-y "${outputPath}"`
   ].filter(Boolean);
 
-  // 🖼️ Embed only fallback-provided album art
   if (fallback?.coverUrl) {
     try {
       const res = await fetch(fallback.coverUrl);
-      const arrayBuffer = await res.arrayBuffer(); // 🚫 No deprecation warning
-      fs.writeFileSync(coverPath, Buffer.from(arrayBuffer));
+      const buf = await res.arrayBuffer();
+      fs.writeFileSync(coverPath, Buffer.from(buf));
       args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
       logger.log(`🖼️ Cover art embedded from MusicBrainz`);
     } catch (e) {
@@ -167,7 +166,7 @@ async function processBatch(req, res) {
   if (!taggedFiles.length)
     return res.status(500).json({ success: false, message: "No files could be tagged." });
 
-  const zipPath = await zipFiles(taggedFiles);
+  const zipPath = await zipTaggedFiles(taggedFiles); // ✅ fixed usage
   res.download(zipPath, path.basename(zipPath));
 }
 
