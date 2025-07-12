@@ -152,9 +152,9 @@ async function queryAcrcloudAll(buffer, prefix) {
  * 2) One final AcoustID→MusicBrainz fallback.
  */
 async function getFingerprintCandidates(filePath) {
-  const fp     = await runFpcalc(filePath);
-  const buffer = fs.readFileSync(filePath);
-  const prefix = path.basename(filePath, path.extname(filePath));
+  const fp       = await runFpcalc(filePath);
+  const buffer   = fs.readFileSync(filePath);
+  const prefix   = path.basename(filePath, path.extname(filePath));
   const baseNorm = extractNormalizedFilename(filePath);
 
   // 1) ACRCloud candidates
@@ -164,11 +164,13 @@ async function getFingerprintCandidates(filePath) {
   const out = [];
   for (const c of acrs) {
     c.recording.duration = fp.duration;
+
+    // normalize strings for comparison
     const artistNorm = normalizeStr(c.recording.artist);
     const titleNorm  = normalizeStr(c.recording.title);
     const candNorm   = artistNorm + titleNorm;
 
-    // only accept if filename contains artist+title, or score is extremely high
+    // accept if extremely confident or filename contains "artist+title"
     if (c.score >= 95 || baseNorm.includes(candNorm)) {
       if (isCompilation(c.recording.album)) {
         logger.warn(`[fallback] Compilation detected (“${c.recording.album}”), text‐search…`);
@@ -191,7 +193,7 @@ async function getFingerprintCandidates(filePath) {
     }
   }
 
-  // 2) AcoustID→MusicBrainz fallback (always append)
+  // 2) always append one AcoustID→MusicBrainz fallback
   const alt = await queryMusicBrainzByFingerprint(fp, prefix);
   if (alt) {
     alt.recording.duration = fp.duration;
