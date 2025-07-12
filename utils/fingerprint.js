@@ -7,8 +7,7 @@ const normalizeTitle = require("./normalizeTitle");
 const logger = require("./logger");
 const fs = require("fs");
 const path = require("path");
-const { findBestRelease } = require("./musicbrainzHelper");  // ← import this
-const { fetchRecordingByMBID } = require("./musicbrainzHelper"); // if you need MBID lookup here too
+const { findBestRelease, getOfficialAlbumInfo } = require("./musicbrainzHelper");
 
 const ACR = new acrcloud({
   host: process.env.ACR_HOST,
@@ -30,7 +29,7 @@ function runFpcalc(filePath) {
   });
 }
 
-/** Heuristic for “compilation”‐style album names */
+/** Heuristic for “compilation”-style album names */
 function isCompilation(albumName) {
   const keywords = ["hits", "greatest", "now", "best", "compilation", "nrj"];
   return keywords.some(k => albumName?.toLowerCase().includes(k));
@@ -47,7 +46,6 @@ async function queryMusicBrainzFallback(artist, title, prefix) {
     const rec = recs.find(r => r.releases?.length) || recs[0];
     if (!rec) return null;
 
-    // pick the best non‐compilation release:
     const release = findBestRelease(rec);
     if (!release) return null;
 
@@ -59,7 +57,7 @@ async function queryMusicBrainzFallback(artist, title, prefix) {
         title: normalizeTitle(rec.title),
         artist: rec["artist-credit"]?.map(a => a.name).join(", "),
         album: normalizeTitle(release.title),
-        date: release.date?.slice(0,4) || null,
+        date: release.date?.slice(0, 4) || null,
         releaseGroupMbid: release["release-group"]?.id,
         genre: null
       }
@@ -100,7 +98,7 @@ async function queryMusicBrainzByFingerprint(fp, prefix) {
         title: rec.title,
         artist: rec.artists?.map(a => a.name).join(", "),
         album: grp?.title || null,
-        date: grp?.["first-release-date"]?.slice(0,4) || null,
+        date: grp?.["first-release-date"]?.slice(0, 4) || null,
         releaseGroupMbid: grp?.id,
         genre: rec.tags?.[0]?.name || null
       }
@@ -128,7 +126,7 @@ async function queryAcrcloudAll(buffer, prefix) {
         title: m.title,
         artist: m.artists?.map(a => a.name).join(", "),
         album: m.album?.name || null,
-        date: m.release_date?.slice(0,4) || null,
+        date: m.release_date?.slice(0, 4) || null,
         genre: m.genres?.[0]?.name || null
       }
     }));
@@ -141,7 +139,8 @@ async function queryAcrcloudAll(buffer, prefix) {
 /**
  * Returns ordered fingerprint candidates:
  * 1) ACRCloud hits (with compilation→fallback)
- * 2) Finally an AcoustID→MusicBrainz lookup
+ * 2) AcoustID→MusicBrainz lookup
+ * 3) Finally a pure text-only MusicBrainz lookup based on filename (Artist - Title)
  */
 async function getFingerprintCandidates(filePath) {
   const fp = await runFpcalc(filePath);
@@ -150,7 +149,7 @@ async function getFingerprintCandidates(filePath) {
 
   // 1) ACRCloud
   const acrs = await queryAcrcloudAll(buffer, prefix);
-  acrs.sort((a,b) => (b.score||0) - (a.score||0));
+  acrs.sort((a, b) => (b.score || 0) - (a.score || 0));
 
   const out = [];
   for (const c of acrs) {
@@ -176,6 +175,24 @@ async function getFingerprintCandidates(filePath) {
   if (alt) {
     alt.recording.duration = fp.duration;
     out.push(clean(alt));
+  }
+
+  // 3) Pure text-only fallback if filename is "Artist - Title"
+  const parts = prefix.split(" - ");
+  if (parts.length >= 2) {
+    const [fileArtist, fileTitle] = parts;
+    try {
+      const info = await getOfficialAlbumInfo(
+        fileArtist.trim(),
+        fileTitle.trim()
+      );
+      if (info) {
+        info.duration = fp.duration;
+        out.push(clean({ method: "text-only", score: 0, recording: info }));
+      }
+    } catch (err) {
+      logger.error(`[TextFallback] ${err.message}`);
+    }
   }
 
   return out;
