@@ -64,6 +64,9 @@ async function handleTagging(filePath, attempt = 1) {
 
   // 🔍 Fallback to MusicBrainz for accurate album & cover
   const fallback = await getOfficialAlbumInfo(artist, title);
+  if (fallback && r.album && fallback.album !== r.album) {
+  logger.logFallbackInfo({ album: r.album }, fallback);
+}
 
   const album = sanitize(normalizeTitle(fallback?.album || r.album || r.release || "Unknown Album"));
   const year = fallback?.year || r.date || "2023";
