@@ -9,27 +9,23 @@ dotenv.config();
 
 console.log(`🪵 Logging is ${process.env.DEBUG_LOGGING === "true" ? "ENABLED" : "DISABLED"}`);
 
-// ─── Key Validations ────────────────────────────────────────────────────────
-if (!process.env.ACR_HOST || !process.env.ACR_KEY || !process.env.ACR_SECRET) {
-  console.warn("⚠️ ACRCloud credentials are missing! Fallback will fail.");
-}
-
-if (!process.env.ACOUSTID_API_KEY) {
-  console.warn("⚠️ AcoustID API key is missing! Primary fingerprinting may fail.");
-}
-
-// ─── Imports ────────────────────────────────────────────────────────────────
-const { processFile, processBatch } = require("./controllers/tagController");
-const cleanupUploads = require("./utils/cleanupUploads");
-
 const app = express();
 const port = process.env.PORT || 3000;
 
-// ─── Ensure Upload Directory ───────────────────────────────────────────────
+// ─── Credentials Check ─────────────────────────────────────────────────────
+if (!process.env.ACR_HOST || !process.env.ACR_KEY || !process.env.ACR_SECRET)
+  console.warn("⚠️ ACRCloud credentials are missing!");
+
+if (!process.env.ACOUSTID_API_KEY)
+  console.warn("⚠️ AcoustID API key is missing!");
+
+// ─── Imports ───────────────────────────────────────────────────────────────
+const { processFile, processBatch } = require("./controllers/tagController");
+const cleanupUploads = require("./utils/cleanupUploads");
+
+// ─── Directories ───────────────────────────────────────────────────────────
 const UPLOAD_DIR = path.join(__dirname, "uploads");
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-}
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // ─── CORS ──────────────────────────────────────────────────────────────────
 app.use(cors({
@@ -41,34 +37,30 @@ app.use(cors({
 const upload = multer({
   dest: UPLOAD_DIR,
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50 MB per file
+    fileSize: 50 * 1024 * 1024,
     files: 30,
   },
   fileFilter: (req, file, cb) => {
     const allowed = [
-      "audio/mpeg", "audio/flac", "audio/x-flac",
-      "audio/mp4", "audio/x-m4a",
-      "audio/wav", "audio/x-wav",
-      "audio/ogg", "audio/webm",
+      "audio/mpeg", "audio/flac", "audio/x-flac", "audio/mp4", "audio/x-m4a",
+      "audio/wav", "audio/x-wav", "audio/ogg", "audio/webm",
       "audio/aac", "audio/opus", "audio/oga",
     ];
     cb(null, allowed.includes(file.mimetype));
   },
 });
 
-// ─── Routes ─────────────────────────────────────────────────────────────────
-// Health check
+// ─── API Routes ─────────────────────────────────────────────────────────────
+// Health
 app.get("/", (req, res) => {
   res.send("🎧 MetaTune API is running.");
 });
 
-// Single-file tagging
+// Tagging
 app.post("/api/tag/upload", upload.single("audio"), processFile);
-
-// Batch-file tagging
 app.post("/api/tag/batch", upload.array("audio"), processBatch);
 
-// View fingerprinting stats
+// Fingerprint Stats
 app.get("/api/stats", (req, res) => {
   const statsPath = path.join(__dirname, "cache", "fingerprintStats.json");
   if (fs.existsSync(statsPath)) {
@@ -79,45 +71,59 @@ app.get("/api/stats", (req, res) => {
   }
 });
 
-// 📂 View available logs/debug files
-app.get("/logs", (req, res) => {
+// ─── Logs HTML UI ───────────────────────────────────────────────────────────
+// Auth middleware (optional)
+function authMiddleware(req, res, next) {
+  const auth = { login: process.env.LOG_USER, password: process.env.LOG_PASS };
+  const b64auth = (req.headers.authorization || '').split(' ')[1] || '';
+  const [user, pass] = Buffer.from(b64auth, 'base64').toString().split(':');
+
+  if (auth.login && auth.password && user === auth.login && pass === auth.password) return next();
+
+  res.set('WWW-Authenticate', 'Basic realm="MetaTune Logs"');
+  res.status(401).send('Authentication required.');
+}
+
+app.get("/logs-ui", authMiddleware, (req, res) => {
   const dirs = ["cache", "logs"];
-  const results = [];
+  let html = `<style>
+    body { background:#0a0f2c; color:#eee; font-family:sans-serif; padding:1rem; }
+    a { color:#4A90E2; text-decoration:none; }
+    ul { list-style:none; padding-left:1em; }
+  </style><h2>📂 MetaTune Logs</h2><ul>`;
 
   for (const dir of dirs) {
     const folder = path.join(__dirname, dir);
     if (fs.existsSync(folder)) {
-      const files = fs.readdirSync(folder).map(name => ({
-        name,
-        path: `/logs/${name}`,
-        dir,
-      }));
-      results.push(...files);
+      html += `<li><strong>${dir}/</strong><ul>`;
+      const files = fs.readdirSync(folder);
+      for (const f of files) {
+        html += `<li><a href="/logs/${dir}/${encodeURIComponent(f)}" target="_blank">${f}</a></li>`;
+      }
+      html += `</ul></li>`;
     }
   }
 
-  res.json(results);
+  html += `</ul><p style="font-size:12px;color:gray;">Secured view of internal logs</p>`;
+  res.send(html);
 });
 
-// 📄 Serve log file contents
-app.get("/logs/:file", (req, res) => {
-  const allowedDirs = ["cache", "logs"];
-  const { file } = req.params;
+// ─── Serve Logs ─────────────────────────────────────────────────────────────
+app.get("/logs/:dir/:file", authMiddleware, (req, res) => {
+  const { dir, file } = req.params;
+  const safeDirs = ["cache", "logs"];
+  if (!safeDirs.includes(dir)) return res.status(403).send("Forbidden");
 
-  for (const dir of allowedDirs) {
-    const filePath = path.join(__dirname, dir, file);
-    if (fs.existsSync(filePath)) {
-      return res.sendFile(filePath);
-    }
-  }
+  const filePath = path.join(__dirname, dir, file);
+  if (!fs.existsSync(filePath)) return res.status(404).send("File not found.");
 
-  res.status(404).send("Log file not found.");
+  res.sendFile(filePath);
 });
 
 // ─── Cleanup ────────────────────────────────────────────────────────────────
 setInterval(() => {
   cleanupUploads(UPLOAD_DIR, 15);
-}, 15 * 60 * 1000); // every 15 mins
+}, 15 * 60 * 1000);
 
 process.on("exit", () => {
   cleanupUploads(UPLOAD_DIR, 0);
@@ -127,7 +133,6 @@ process.on("exit", () => {
 process.on("uncaughtException", err => {
   console.error("💥 Uncaught Exception:", err);
 });
-
 process.on("unhandledRejection", err => {
   console.error("💥 Unhandled Rejection:", err);
 });
