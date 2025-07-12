@@ -3,15 +3,14 @@
 const fs = require("fs");
 const path = require("path");
 const { exec } = require("child_process");
-
 const fetch = require("../utils/fetch");
 const logger = require("../utils/logger");
 const { getFingerprintCandidates } = require("../utils/fingerprint");
-const { extractOriginalMetadata }    = require("../utils/metadataExtractor");
-const { scoreFusionMatch }           = require("../utils/fusionScorer");
-const { cleanupFiles }               = require("../utils/cleanupUploads");
-const { logToDB }                    = require("../utils/db");
-const { zipFiles }                   = require("../utils/zipFiles");
+const { extractOriginalMetadata } = require("../utils/metadataExtractor");
+const { scoreFusionMatch } = require("../utils/fusionScorer");
+const { cleanupFiles } = require("../utils/cleanupUploads");
+const { logToDB } = require("../utils/db");
+const { zipFiles } = require("../utils/zipFiles");
 const {
   getOfficialAlbumInfo,
   getCoverArtByMetadata
@@ -28,7 +27,7 @@ function runCommand(cmd) {
   });
 }
 
-// Sanitize any user‐visible string into a safe filename
+// Sanitize any user-visible string into a safe filename
 function sanitize(str) {
   return str ? str.replace(/[\\/:*?"<>|]/g, "_").trim() : "Unknown";
 }
@@ -39,23 +38,52 @@ async function handleTagging(filePath) {
     return { success: false, message: "Uploaded file missing." };
   }
 
-  const ext           = path.extname(filePath) || ".mp3";
-  const dir           = path.dirname(filePath);
-  const base          = path.basename(filePath, ext);
-  const debugPath     = path.join("cache", `${base}.json`);
+  const ext = path.extname(filePath) || ".mp3";
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath, ext);
+  const debugPath = path.join("cache", `${base}.json`);
   const publicLogPath = path.join("logs", `${base}-match-log.json`);
-  const coverPath     = path.join(dir, `${base}-cover.jpg`);
+  const coverPath = path.join(dir, `${base}-cover.jpg`);
 
   logger.log(`🔍 [START] ${filePath}`);
 
   // 1) Extract original tags & get fingerprint candidates
-  const original   = await extractOriginalMetadata(filePath);
+  const original = await extractOriginalMetadata(filePath);
   logger.log("📂 Original metadata:", original);
 
-  const candidates = await getFingerprintCandidates(filePath);
+  let candidates = await getFingerprintCandidates(filePath);
+
+  // Fallback if no fingerprint candidates
   if (!candidates.length) {
-    logger.warn("⚠️ No fingerprint candidates");
-    return { success: false, message: "No match found." };
+    logger.warn("⚠️ No fingerprint candidates, falling back to text-only lookup");
+    try {
+      const fbInfo = await getOfficialAlbumInfo(
+        original.artist,
+        original.title,
+        original.year
+      );
+      if (fbInfo) {
+        const fallbackRec = {
+          method: 'text-only',
+          score: 0,
+          recording: {
+            mbid: fbInfo.recordingMbid,
+            title: original.title,
+            artist: original.artist,
+            album: fbInfo.album,
+            date: fbInfo.year,
+            releaseGroupMbid: fbInfo.releaseGroupMbid,
+            genre: original.genre
+          }
+        };
+        candidates = [fallbackRec];
+      }
+    } catch (err) {
+      logger.error(`❌ Text-only fallback failed: ${err.message}`);
+    }
+    if (!candidates.length) {
+      return { success: false, message: "No match found." };
+    }
   }
 
   let chosen = null;
@@ -64,17 +92,21 @@ async function handleTagging(filePath) {
   // 2) First pass: pick any candidate with fusion ≥ 0.6
   for (const cand of candidates) {
     const { method, score, recording: rec } = cand;
-    const title  = sanitize(normalizeTitle(rec.title));
+    const title = sanitize(normalizeTitle(rec.title));
     const artist = sanitize(normalizeTitle(rec.artist));
-
-    // Lookup album (MBID if available, else text+year)
     const lookupYear = original.year || rec.date || "";
-    const albumData  = await getOfficialAlbumInfo(artist, title, lookupYear, rec.mbid);
-    const album      = sanitize(normalizeTitle(
+
+    const albumData = await getOfficialAlbumInfo(
+      artist,
+      title,
+      lookupYear,
+      rec.mbid
+    );
+    const album = sanitize(normalizeTitle(
       albumData?.album || rec.album || original.album || "Unknown Album"
     ));
-    const year       = albumData?.year  || rec.date || original.year  || "2023";
-    const genre      = rec.genre       || original.genre || "";
+    const year = albumData?.year || rec.date || original.year || new Date().getFullYear().toString();
+    const genre = rec.genre || original.genre || "";
 
     const finalMetadata = {
       title,
@@ -98,56 +130,75 @@ async function handleTagging(filePath) {
     }
   }
 
-  // 3) Fallback: if none ≥0.6, pick highest‐scoring ≥0.5
+  // 3) Fallback: if none ≥0.6, pick highest-scoring ≥0.5
   if (!chosen) {
     const scored = await Promise.all(candidates.map(async c => {
       const { method, score: sc, recording: rec } = c;
-      const title  = sanitize(normalizeTitle(rec.title));
+      const title = sanitize(normalizeTitle(rec.title));
       const artist = sanitize(normalizeTitle(rec.artist));
-
       const lookupYear = original.year || rec.date || "";
-      const albumData  = await getOfficialAlbumInfo(artist, title, lookupYear, rec.mbid);
-      const album      = sanitize(normalizeTitle(
+
+      const albumData = await getOfficialAlbumInfo(
+        artist,
+        title,
+        lookupYear,
+        rec.mbid
+      );
+      const album = sanitize(normalizeTitle(
         albumData?.album || rec.album || original.album || "Unknown Album"
       ));
-      const year       = albumData?.year  || rec.date || original.year  || "2023";
-      const genre      = rec.genre       || original.genre || "";
+      const year = albumData?.year || rec.date || original.year || new Date().getFullYear().toString();
+      const genre = rec.genre || original.genre || "";
 
-      const finalMetadata = {
-        title,
-        artist,
-        album,
-        year,
-        genre,
-        score: sc,
-        source: method
-      };
-
+      const finalMetadata = { title, artist, album, year, genre, score: sc, source: method };
       const fusion = scoreFusionMatch(filePath, finalMetadata, original);
       return { cand: c, finalMetadata, fusion, albumData };
     }));
 
-    scored.sort((a,b) => b.fusion.score - a.fusion.score);
-    const best = scored[0];
-    if (best.fusion.score >= 0.5) {
-      logger.warn(`⚠️ No high‐confidence candidates, accepting fusion ${best.fusion.score}`);
-      chosen = best;
-      fusionResult = best.fusion;
+    scored.sort((a, b) => b.fusion.score - a.fusion.score);
+    if (scored[0].fusion.score >= 0.5) {
+      logger.warn(`⚠️ No high-confidence candidates, accepting fusion ${scored[0].fusion.score}`);
+      chosen = scored[0];
+      fusionResult = chosen.fusion;
+    }
+  }
+
+  // 4) Final text-only fallback if still nothing chosen
+  if (!chosen) {
+    logger.warn("⚠️ All candidates below threshold, using final text-only fallback");
+    try {
+      const fbInfo = await getOfficialAlbumInfo(
+        original.artist,
+        original.title,
+        original.year
+      );
+      if (fbInfo) {
+        const finalMetadata = {
+          title: sanitize(normalizeTitle(original.title)),
+          artist: sanitize(normalizeTitle(original.artist)),
+          album: sanitize(normalizeTitle(fbInfo.album)),
+          year: fbInfo.year,
+          genre: original.genre || "",
+          score: 0,
+          source: 'text-only'
+        };
+        chosen = { cand: { method: 'text-only' }, finalMetadata, fusionResult: { score: 0, confidence: 'fallback' }, albumData: fbInfo };
+      }
+    } catch (err) {
+      logger.error(`❌ Final fallback failed: ${err.message}`);
     }
   }
 
   if (!chosen) {
-    logger.error("❌ All candidates below threshold, skipping.");
+    logger.error("❌ All candidates failed, skipping.");
     return { success: false, message: "Metadata mismatch." };
   }
 
-  // Unpack the chosen result
   const { cand, finalMetadata, albumData } = chosen;
-  fusionResult = fusionResult || chosen.fusion;
   logger.log(`✅ [MATCH] ${finalMetadata.artist} — ${finalMetadata.title}`);
   logger.log(`💽 Album: ${finalMetadata.album} | 📆 Year: ${finalMetadata.year}`);
 
-  // 4) Fetch & embed cover art
+  // 5) Fetch & embed cover art
   let embeddedCover = false;
   if (albumData?.coverUrl) {
     try {
@@ -180,9 +231,9 @@ async function handleTagging(filePath) {
     }
   }
 
-  // 5) Assemble ffmpeg args
+  // 6) Assemble ffmpeg args
   const inputs = [`-i "${filePath}"`];
-  const maps   = [`-map 0:a`];
+  const maps = [`-map 0:a`];
   if (embeddedCover) {
     inputs.push(`-i "${coverPath}"`);
     maps.push(`-map 1`);
@@ -201,8 +252,8 @@ async function handleTagging(filePath) {
     : ["-c:a libmp3lame", "-b:a 192k"];
 
   const taggedName = `${finalMetadata.artist} - ${finalMetadata.title}${ext}`;
-  const output     = path.join(dir, taggedName);
-  const ffArgs     = [
+  const output = path.join(dir, taggedName);
+  const ffArgs = [
     ...inputs,
     ...maps,
     ...metadataArgs,
@@ -210,11 +261,9 @@ async function handleTagging(filePath) {
     `-y "${output}"`
   ];
 
-  // 6) Run ffmpeg and finalize
+  // 7) Run ffmpeg and finalize
   try {
     await runCommand(`ffmpeg ${ffArgs.join(" ")}`);
-
-    // write debug outputs
     fs.writeFileSync(debugPath, JSON.stringify({
       chosenCandidate: cand,
       original,
@@ -222,10 +271,7 @@ async function handleTagging(filePath) {
       finalMetadata,
       fusion: fusionResult
     }, null, 2));
-    fs.writeFileSync(publicLogPath, JSON.stringify({
-      finalMetadata,
-      fusion: fusionResult
-    }, null, 2));
+    fs.writeFileSync(publicLogPath, JSON.stringify({ finalMetadata, fusion: fusionResult }, null, 2));
 
     logger.log(`✅ [DONE] Saved: ${output}`);
     logger.logMatch(finalMetadata);
@@ -243,7 +289,6 @@ async function handleTagging(filePath) {
 }
 
 // Express route handlers
-
 async function processFile(req, res) {
   if (!req.file) {
     return res.status(400).json({ success: false, message: "No file uploaded" });
