@@ -1,27 +1,32 @@
-const fs = require('fs');
-const path = require('path');
+const fs = require("fs");
+const path = require("path");
 
-function cleanupUploads(directory = './uploads', maxAgeMinutes = 10) {
-  const now = Date.now();
-  const maxAge = maxAgeMinutes * 60 * 1000;
+// Delete files older than X minutes
+function cleanupUploads(dirPath, maxAgeMinutes = 15) {
+  const cutoff = Date.now() - maxAgeMinutes * 60 * 1000;
 
-  fs.readdir(directory, (err, files) => {
-    if (err) return console.error('Error reading upload directory:', err);
-
-    files.forEach(file => {
-      const filePath = path.join(directory, file);
-      fs.stat(filePath, (err, stats) => {
-        if (err) return console.error('Error reading file stats:', err);
-
-        if (now - stats.mtimeMs > maxAge) {
-          fs.unlink(filePath, err => {
-            if (err) return console.error('Failed to delete file:', filePath);
-            console.log('🧹 Deleted old file:', filePath);
-          });
-        }
-      });
-    });
+  fs.readdirSync(dirPath).forEach(file => {
+    const fullPath = path.join(dirPath, file);
+    try {
+      const stats = fs.statSync(fullPath);
+      if (stats.isFile() && stats.mtimeMs < cutoff) {
+        fs.unlinkSync(fullPath);
+      }
+    } catch (err) {
+      console.warn(`⚠️ Could not delete ${fullPath}: ${err.message}`);
+    }
   });
 }
 
-module.exports = cleanupUploads;
+// Delete specific files immediately
+function cleanupFiles(paths = []) {
+  for (const p of paths) {
+    try {
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch (e) {
+      console.warn(`⚠️ Failed to delete ${p}: ${e.message}`);
+    }
+  }
+}
+
+module.exports = { cleanupUploads, cleanupFiles };
