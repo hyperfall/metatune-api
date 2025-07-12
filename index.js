@@ -20,9 +20,11 @@ const port = process.env.PORT || 3000;
 
 // ─── Security Middlewares ────────────────────────────────────────────────────
 app.use(helmet());
+// rate limiter (restrict to 60 requests/min per IP)
 app.use(rateLimit({
   windowMs: 60 * 1000,  // 1 minute
-  max: 60               // per IP
+  max: 60,              // per IP
+  trustProxy: false     // prevent permissive trust-proxy bypass
 }));
 app.use(cors({
   origin: process.env.ALLOWED_ORIGIN?.split(",") || "*",
