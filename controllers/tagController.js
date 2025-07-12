@@ -37,6 +37,7 @@ async function handleTagging(filePath, attempt = 1) {
   const dir = path.dirname(filePath);
   const coverPath = path.join(dir, `${baseName}-cover.jpg`);
   const debugJSON = path.join("cache", `${baseName}.json`);
+  const publicLogPath = path.join("logs", "match-log.json");
 
   logger.log(`🔍 [START] Processing file: ${filePath}`);
 
@@ -95,7 +96,7 @@ async function handleTagging(filePath, attempt = 1) {
   if (r.mbid) {
     try {
       const art = await fetchAlbumArt(r.mbid);
-      if (art && art.imageBuffer) {
+      if (art?.imageBuffer) {
         fs.writeFileSync(coverPath, art.imageBuffer);
         args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
         logger.log(`🖼️ Cover art embedded from MusicBrainz`);
@@ -111,6 +112,8 @@ async function handleTagging(filePath, attempt = 1) {
 
     const metadata = { title, artist, album, year, genre, score, source, confidence };
     fs.writeFileSync(debugJSON, JSON.stringify(metadata, null, 2));
+    fs.writeFileSync(publicLogPath, JSON.stringify(metadata, null, 2));
+
     logger.logMatch(metadata);
     logger.updateStats({ source, success: true });
     await logToDB?.(metadata);
