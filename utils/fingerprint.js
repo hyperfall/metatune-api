@@ -22,11 +22,8 @@ function runFpcalc(filePath) {
   return new Promise((resolve, reject) => {
     exec(`fpcalc -json "${filePath}"`, { maxBuffer: 1024 * 2000 }, (err, stdout) => {
       if (err) return reject(err);
-      try {
-        resolve(JSON.parse(stdout));
-      } catch (e) {
-        reject(e);
-      }
+      try { resolve(JSON.parse(stdout)); }
+      catch (e) { reject(e); }
     });
   });
 }
@@ -40,11 +37,10 @@ function isCompilation(albumName) {
 }
 
 /**
- * Fallback: fetch album info via MusicBrainz helper when a compilation is detected
+ * Fallback: robust MusicBrainz lookup when a compilation is detected
  */
-async function queryMusicBrainzFallback(artist, title, prefix) {
+async function queryMusicBrainzFallback(artist, title) {
   try {
-    // Use robust MB lookup (MBID-first, then text search fallback without year)
     const info = await getOfficialAlbumInfo(artist, title, "");
     if (!info) return null;
     return {
@@ -139,10 +135,42 @@ async function queryAcrcloudAll(buffer, prefix) {
 }
 
 /**
+ * Dejavu spectrogram-based fallback
+ */
+async function queryDejavu(filePath) {
+  return new Promise((resolve, reject) => {
+    exec(`dejavu recognize "${filePath}" --format json`, (err, stdout) => {
+      if (err) return reject(err);
+      try {
+        const r = JSON.parse(stdout);
+        if (!r?.song) return resolve(null);
+        const song = r.song;
+        return resolve({
+          method: "dejavu",
+          score: 90,
+          recording: {
+            mbid: song.mbid || null,
+            title: song.title,
+            artist: song.artist,
+            album: song.album,
+            date: song.year,
+            releaseGroupMbid: null,
+            genre: null
+          }
+        });
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
+}
+
+/**
  * Returns ordered fingerprint candidates:
  * 1) ACRCloud hits (with compilation→fallback)
  * 2) AcoustID→MusicBrainz lookup
- * 3) Pure text-only MusicBrainz lookup based on filename (Artist - Title)
+ * 3) Dejavu
+ * 4) Pure text-only MusicBrainz lookup based on filename (Artist - Title)
  */
 async function getFingerprintCandidates(filePath) {
   const fp = await runFpcalc(filePath);
@@ -152,7 +180,6 @@ async function getFingerprintCandidates(filePath) {
   // 1) ACRCloud
   const acrs = await queryAcrcloudAll(buffer, prefix);
   acrs.sort((a, b) => (b.score || 0) - (a.score || 0));
-
   const out = [];
   for (const c of acrs) {
     c.recording.duration = fp.duration;
@@ -160,8 +187,7 @@ async function getFingerprintCandidates(filePath) {
       logger.warn(`[fallback] Compilation detected (“${c.recording.album}”), using MB fallback…`);
       const fb = await queryMusicBrainzFallback(
         c.recording.artist,
-        c.recording.title,
-        prefix
+        c.recording.title
       );
       if (fb) {
         fb.recording.duration = fp.duration;
@@ -174,12 +200,17 @@ async function getFingerprintCandidates(filePath) {
 
   // 2) AcoustID→MusicBrainz
   const alt = await queryMusicBrainzByFingerprint(fp, prefix);
-  if (alt) {
-    alt.recording.duration = fp.duration;
-    out.push(clean(alt));
+  if (alt) { alt.recording.duration = fp.duration; out.push(clean(alt)); }
+
+  // 3) Dejavu
+  try {
+    const dj = await queryDejavu(filePath);
+    if (dj) { dj.recording.duration = fp.duration; out.push(clean(dj)); }
+  } catch (e) {
+    logger.warn(`[Dejavu] ${e.message}`);
   }
 
-  // 3) Pure text-only fallback if filename is "Artist - Title"
+  // 4) Filename-based text-only fallback
   const parts = prefix.split(" - ");
   if (parts.length >= 2) {
     const [fileArtist, fileTitle] = parts;
@@ -189,9 +220,9 @@ async function getFingerprintCandidates(filePath) {
         fileTitle.trim()
       );
       if (info) {
-        const fallback = { method: "text-only", score: 0, recording: info };
-        fallback.recording.duration = fp.duration;
-        out.push(clean(fallback));
+        const fb = { method: "text-only", score: 0, recording: info };
+        fb.recording.duration = fp.duration;
+        out.push(clean(fb));
       }
     } catch (err) {
       logger.error(`[TextFallback] ${err.message}`);
@@ -201,7 +232,7 @@ async function getFingerprintCandidates(filePath) {
   return out;
 }
 
-/** Legacy: return only the top‐scoring candidate */
+/** Legacy: return only the top-scoring candidate */
 async function getBestFingerprintMatch(filePath) {
   const cands = await getFingerprintCandidates(filePath);
   return cands[0] || null;
