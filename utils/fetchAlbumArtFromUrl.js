@@ -1,4 +1,4 @@
-// utils/fetchAlbumArt.js
+// utils/fetchAlbumArtFromUrl.js
 const axios = require("axios");
 
 const VALID_IMAGE_MIME = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
