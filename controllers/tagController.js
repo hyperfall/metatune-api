@@ -10,8 +10,7 @@ const { scoreFusionMatch } = require("../utils/fusionScorer");
 const { cleanupFiles } = require("../utils/cleanupUploads");
 const { logToDB } = require("../utils/db");
 const { zipFiles } = require("../utils/zipFiles");
-const { getOfficialAlbumInfo } = require("../utils/musicbrainzHelper");
-const { getCoverArtByMetadata } = require("../utils/fetchAlbumArtByMetadata");
+const { getOfficialAlbumInfo, getCoverArtByMetadata } = require("../utils/musicbrainzHelper");
 const normalizeTitle = require("../utils/normalizeTitle");
 
 function runCommand(command) {
@@ -27,12 +26,6 @@ function sanitize(str) {
   return str ? str.replace(/[\\/:*?"<>|]/g, "_").trim() : "Unknown";
 }
 
-function getConfidenceLevel(score) {
-  if (score >= 90) return "High";
-  if (score >= 60) return "Medium";
-  return "Low";
-}
-
 async function handleTagging(filePath, attempt = 1) {
   if (!fs.existsSync(filePath)) {
     logger.error(`❌ File not found: ${filePath}`);
@@ -44,10 +37,11 @@ async function handleTagging(filePath, attempt = 1) {
   const dir = path.dirname(filePath);
   const coverPath = path.join(dir, `${base}-cover.jpg`);
   const debugPath = path.join("cache", `${base}.json`);
-  const publicLogPath = path.join("logs", "match-log.json");
+  const publicLogPath = path.join("logs", `${base}-match-log.json`);
 
   logger.log(`🔍 [START] ${filePath}`);
 
+  // Step 1: Fingerprint Matching
   let match;
   try {
     match = await getBestFingerprintMatch(filePath);
@@ -56,11 +50,14 @@ async function handleTagging(filePath, attempt = 1) {
       logger.warn("🔁 Retrying fingerprint...");
       return await handleTagging(filePath, 2);
     }
+    logger.error(`🧠 Fingerprint failed: ${err.message}`);
     return { success: false, message: "Fingerprinting failed." };
   }
 
-  if (!match?.recording || match.score < 60)
+  if (!match?.recording || match.score < 60) {
+    logger.warn(`⚠️ Low fingerprint confidence (${match?.score || 0}). Skipping.`);
     return { success: false, message: "No confident match found." };
+  }
 
   const r = match.recording;
   const rawTitle = r.title || base;
@@ -69,27 +66,28 @@ async function handleTagging(filePath, attempt = 1) {
   const title = sanitize(normalizeTitle(rawTitle));
   const artist = sanitize(normalizeTitle(rawArtist));
 
+  // Step 2: Album Info
   const albumData = await getOfficialAlbumInfo(artist, title);
   const album = sanitize(normalizeTitle(albumData?.album || r.album || "Unknown Album"));
   const year = albumData?.year || r.date || "2023";
   const coverUrl = albumData?.coverUrl;
-
   const genre = r.genre || "";
+
   const score = match.score || 0;
   const source = match.method || "unknown";
-  const confidence = getConfidenceLevel(score);
 
-  const finalMetadata = { title, artist, album, year, genre, score, source, confidence };
+  const finalMetadata = { title, artist, album, year, genre, score, source };
 
+  // Step 3: Original Metadata & Fusion Score
   const original = await extractOriginalMetadata(filePath);
-  const fusionScore = scoreFusionMatch({
-    filePath,
-    match: finalMetadata,
-    embeddedTags: original
-  });
+  const fusion = scoreFusionMatch(filePath, finalMetadata, original);
 
-  if (fusionScore.score < 0.5) {
-    logger.warn(`❌ [FUSION FAIL] Score ${fusionScore.score} < 0.5. Skipping file.`);
+  logger.log(`📊 Score: ${score} | 🔎 Source: ${source}`);
+  logger.log(`🧠 Fusion Score: ${fusion.score} (${fusion.confidence})`);
+  logger.log("🔬 Fusion Debug:", fusion.debug);
+
+  if (fusion.score < 0.5) {
+    logger.warn(`❌ [FUSION FAIL] Score ${fusion.score} < 0.5. Skipping file.`);
     return { success: false, message: "Metadata mismatch." };
   }
 
@@ -98,9 +96,8 @@ async function handleTagging(filePath, attempt = 1) {
 
   logger.log(`✅ [MATCH] ${title} by ${artist}`);
   logger.log(`💽 Album: ${album} | 📆 Year: ${year} | 🎼 Genre: ${genre || "N/A"}`);
-  logger.log(`📊 Score: ${score} | 🔎 Source: ${source} | 🔐 Confidence: ${confidence}`);
-  logger.log(`🧠 Fusion Score: ${fusionScore.score} (${fusionScore.confidence})`);
 
+  // Step 4: FFmpeg Tagging
   let args = [
     `-i "${filePath}"`,
     `-metadata title="${title}"`,
@@ -108,12 +105,13 @@ async function handleTagging(filePath, attempt = 1) {
     `-metadata album="${album}"`,
     `-metadata date="${year}"`,
     genre ? `-metadata genre="${sanitize(genre)}"` : "",
-    `-metadata comment="Tagged by MetaTune | Score: ${fusionScore.score} (${fusionScore.confidence})"`,
+    `-metadata comment="Tagged by MetaTune | Score: ${fusion.score} (${fusion.confidence})"`,
     `-c:a libmp3lame`,
     `-b:a 192k`,
     `-y "${output}"`
   ].filter(Boolean);
 
+  // Step 5: Cover Art Embedding
   let embeddedCover = false;
 
   if (coverUrl) {
@@ -125,16 +123,15 @@ async function handleTagging(filePath, attempt = 1) {
       embeddedCover = true;
       logger.log(`🖼️ Cover art embedded from MusicBrainz`);
     } catch (err) {
-      logger.warn(`⚠️ Cover art failed: ${err.message}`);
+      logger.warn(`⚠️ MusicBrainz cover failed: ${err.message}`);
     }
   }
 
   if (!embeddedCover) {
     try {
-      const fallbackArt = await getCoverArtByMetadata(artist, title, album, year);
-
-      if (fallbackArt) {
-        const res = await fetch(fallbackArt);
+      const fallback = await getCoverArtByMetadata(artist, title, album, year);
+      if (fallback?.coverUrl) {
+        const res = await fetch(fallback.coverUrl);
         const buf = await res.arrayBuffer();
         fs.writeFileSync(coverPath, Buffer.from(buf));
         args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
@@ -147,10 +144,11 @@ async function handleTagging(filePath, attempt = 1) {
     }
   }
 
+  // Step 6: Save Final File
   try {
     await runCommand(`ffmpeg ${args.join(" ")}`);
-    fs.writeFileSync(debugPath, JSON.stringify(finalMetadata, null, 2));
-    fs.writeFileSync(publicLogPath, JSON.stringify(finalMetadata, null, 2));
+    fs.writeFileSync(debugPath, JSON.stringify({ match, finalMetadata, fusion }, null, 2));
+    fs.writeFileSync(publicLogPath, JSON.stringify({ match, finalMetadata, fusion }, null, 2));
 
     logger.log(`✅ [DONE] ${output}`);
     logger.logMatch(finalMetadata);
@@ -165,6 +163,8 @@ async function handleTagging(filePath, attempt = 1) {
     return { success: false, message: "Tagging failed." };
   }
 }
+
+// ROUTES
 
 async function processFile(req, res) {
   if (!req.file)
