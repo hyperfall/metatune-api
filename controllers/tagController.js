@@ -1,14 +1,15 @@
 const fs = require("fs");
 const path = require("path");
-const { getBestFingerprintMatch } = require("../utils/fingerprint");
-const { logMatch, logError, updateStats } = require("../utils/logger");
-const fetch = require('../utils/fetch'); // dynamically loads node-fetch@3+
 const { exec } = require("child_process");
+
+const { getBestFingerprintMatch } = require("../utils/fingerprint");
+const fetch = require("../utils/fetch");
+const { logMatch, logError, updateStats } = require("../utils/logger");
 
 function runCommand(command) {
   return new Promise((resolve, reject) => {
     exec(command, { maxBuffer: 1024 * 1000 }, (err, stdout, stderr) => {
-      if (err) return reject(stderr);
+      if (err) return reject(stderr || stdout);
       resolve(stdout.trim());
     });
   });
@@ -28,7 +29,10 @@ async function processFile(filePath) {
   const match = await getBestFingerprintMatch(filePath);
 
   if (!match || !match.recording) {
-    console.warn(`❌ [MISS] No match found for: ${filePath}`);
+    const error = `❌ [MISS] No match found for: ${filePath}`;
+    console.warn(error);
+    logError(error);
+    updateStats({ source: match?.method || "unknown", success: false });
     return { success: false, message: "Track could not be identified." };
   }
 
@@ -59,7 +63,7 @@ async function processFile(filePath) {
     `-y "${outputPath}"`
   ];
 
-  // Cover art (optional)
+  // Optional cover art
   if (r.coverArt) {
     const coverPath = path.join(dir, "cover.jpg");
     try {
@@ -69,7 +73,9 @@ async function processFile(filePath) {
       args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
       console.log(`🖼️ Cover art embedded: ${r.coverArt}`);
     } catch (e) {
-      console.warn(`⚠️ Failed to fetch cover art: ${e.message}`);
+      const error = `⚠️ Failed to fetch cover art for ${filePath}: ${e.message}`;
+      console.warn(error);
+      logError(error);
     }
   }
 
@@ -78,9 +84,27 @@ async function processFile(filePath) {
     await runCommand(ffmpegCmd);
     console.log(`✅ [DONE] Tagged file saved as: ${outputPath}`);
   } catch (err) {
-    console.error(`❌ [ERROR] FFmpeg tagging failed:`, err);
+    const error = `❌ [ERROR] FFmpeg failed on ${filePath}: ${err}`;
+    console.error(error);
+    logError(error);
+    updateStats({ source: match.method, success: false });
     return { success: false, message: "Tagging failed." };
   }
+
+  logMatch({
+    input_file: filePath,
+    output_file: outputPath,
+    title,
+    artist,
+    album,
+    year,
+    score,
+    source: match.method,
+    cover_art: r.coverArt || null,
+    status: "success"
+  });
+
+  updateStats({ source: match.method, success: true });
 
   return {
     success: true,
