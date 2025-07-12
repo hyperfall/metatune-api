@@ -4,7 +4,6 @@ const { exec } = require("child_process");
 const acrcloud = require("acrcloud");
 const axios = require("axios");
 const normalizeTitle = require("./normalizeTitle");
-const fetchAlbumArt = require("./fetchAlbumArt");
 const logger = require("./logger");
 const fs = require("fs");
 const path = require("path");
@@ -109,23 +108,11 @@ async function getBestFingerprintMatch(filePath) {
       match = await queryAcrcloud(fileBuffer, baseName);
     }
 
-    if (match) {
-      const art = await fetchAlbumArt(match.recording.mbid);
-      match.recording.coverArt = art?.imageBuffer
-        ? `data:${art.mime};base64,${art.imageBuffer.toString("base64")}`
-        : null;
-      return clean(match);
-    }
+    if (match) return clean(match);
 
     // Fallback to MusicBrainz
     const alt = await queryMusicBrainzByFingerprint(fp, baseName);
-    if (alt) {
-      const art = await fetchAlbumArt(alt.recording.mbid);
-      alt.recording.coverArt = art?.imageBuffer
-        ? `data:${art.mime};base64,${art.imageBuffer.toString("base64")}`
-        : null;
-      return clean(alt);
-    }
+    if (alt) return clean(alt);
 
     return null;
   } catch (e) {
