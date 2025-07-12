@@ -55,13 +55,27 @@ async function searchRecording(artist, title, year = "") {
   const safeArtist = sanitizeForQuery(artist);
   const safeTitle  = sanitizeForQuery(title);
 
-  const parts = [
-    `artist:"${safeArtist}"`,
-    `recording:"${safeTitle}"`
-  ];
-  if (year && YEAR_REGEX.test(year)) {
-    parts.push(`date:${year}`);
+  // build the two possible queries
+  const baseQuery = `artist:"${safeArtist}" AND recording:"${safeTitle}"`;
+  const yearQuery = year && YEAR_REGEX.test(year)
+    ? `${baseQuery} AND date:${year}`
+    : baseQuery;
+
+  // 1) Try with year
+  let url = `https://musicbrainz.org/ws/2/recording?query=${encodeURIComponent(yearQuery)}&fmt=json&limit=20`;
+  let data = await safeFetchJSON(url).catch(() => null);
+  let recs = data?.recordings || [];
+
+  // 2) If nothing found *and* we did include a year, retry without it
+  if (recs.length === 0 && year) {
+    url = `https://musicbrainz.org/ws/2/recording?query=${encodeURIComponent(baseQuery)}&fmt=json&limit=20`;
+    data = await safeFetchJSON(url).catch(() => null);
+    recs = data?.recordings || [];
   }
+
+  return recs;
+}
+
 
   const query = parts.join(" AND ");
   const url = `https://musicbrainz.org/ws/2/recording?query=${encodeURIComponent(query)}&fmt=json&limit=20`;
