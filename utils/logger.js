@@ -1,5 +1,3 @@
-// utils/logger.js
-
 const fs = require("fs");
 const path = require("path");
 
@@ -12,7 +10,9 @@ if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
 const logFile = path.join(logDir, "fingerprintLog.json");
 const errorFile = path.join(logDir, "errors.log");
 const statsFile = path.join(logDir, "fingerprintStats.json");
+const eventFile = path.join(logDir, "events.log");
 
+// ─── Rotation ─────────────────────────────────────────────────────────────
 function rotateIfTooLarge(filePath) {
   try {
     if (fs.existsSync(filePath)) {
@@ -20,7 +20,8 @@ function rotateIfTooLarge(filePath) {
       if (stat.size > MAX_LOG_SIZE) {
         const backupName = `${filePath}.${Date.now()}.bak`;
         fs.renameSync(filePath, backupName);
-        fs.writeFileSync(filePath, "[]"); // new blank log for .json
+        const isJson = filePath.endsWith(".json");
+        fs.writeFileSync(filePath, isJson ? "[]" : "");
       }
     }
   } catch (e) {
@@ -28,10 +29,28 @@ function rotateIfTooLarge(filePath) {
   }
 }
 
+// ─── Standard Logging ─────────────────────────────────────────────────────
+function log(message) {
+  if (!DEBUG) return;
+  rotateIfTooLarge(eventFile);
+  const entry = `[${new Date().toISOString()}] ${message}\n`;
+  console.log(entry.trim());
+  fs.appendFileSync(eventFile, entry);
+}
+
+function warn(message) {
+  if (!DEBUG) return;
+  rotateIfTooLarge(eventFile);
+  const entry = `[${new Date().toISOString()}] ⚠️ ${message}\n`;
+  console.warn(entry.trim());
+  fs.appendFileSync(eventFile, entry);
+}
+
+// ─── Match Logging ────────────────────────────────────────────────────────
 function logMatch(data) {
   if (!DEBUG) return;
-
   rotateIfTooLarge(logFile);
+
   const entry = {
     timestamp: new Date().toISOString(),
     ...data,
@@ -48,17 +67,18 @@ function logMatch(data) {
   fs.writeFileSync(logFile, JSON.stringify(logs, null, 2));
 }
 
+// ─── Error Logging ────────────────────────────────────────────────────────
 function logError(error) {
   if (!DEBUG) return;
-
   rotateIfTooLarge(errorFile);
-  const entry = `[${new Date().toISOString()}] ${error}\n`;
+  const entry = `[${new Date().toISOString()}] ❌ ${error}\n`;
+  console.error(entry.trim());
   fs.appendFileSync(errorFile, entry);
 }
 
+// ─── Stats Logging ────────────────────────────────────────────────────────
 function updateStats({ source, success }) {
   if (!DEBUG) return;
-
   rotateIfTooLarge(statsFile);
 
   let stats = {
@@ -85,8 +105,4 @@ function updateStats({ source, success }) {
   fs.writeFileSync(statsFile, JSON.stringify(stats, null, 2));
 }
 
-module.exports = {
-  logMatch,
-  logError,
-  updateStats
-};
+// ─── Export ──────────────
