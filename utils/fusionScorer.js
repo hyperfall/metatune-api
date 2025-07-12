@@ -102,9 +102,10 @@ function scoreFusionMatch(filePath, match = {}, embeddedTags = {}) {
       0.10 * yearScore +
       0.10 * durationScore;
 
+  // lowered medium threshold to catch more matches
   const confidence =
     finalScore >= 0.8 ? "High" :
-    finalScore >= 0.5 ? "Medium" :    // lowered medium threshold to catch more
+    finalScore >= 0.5 ? "Medium" :
     "Low";
 
   return {
