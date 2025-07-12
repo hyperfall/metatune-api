@@ -8,6 +8,18 @@ const path = require("path");
 
 dotenv.config();
 
+console.log(`🪵 Logging is ${process.env.DEBUG_LOGGING === "true" ? "ENABLED" : "DISABLED"}`);
+
+// ─── Key Validations ────────────────────────────────────────────────────────
+if (!process.env.ACR_HOST || !process.env.ACR_KEY || !process.env.ACR_SECRET) {
+  console.warn("⚠️ ACRCloud credentials are missing! Fallback will fail.");
+}
+
+if (!process.env.ACOUSTID_API_KEY) {
+  console.warn("⚠️ AcoustID API key is missing! Primary fingerprinting may fail.");
+}
+
+// ─── Imports ────────────────────────────────────────────────────────────────
 const { processFile, processBatch } = require("./controllers/tagController");
 const cleanupUploads = require("./utils/cleanupUploads");
 
@@ -31,22 +43,15 @@ const upload = multer({
   dest: UPLOAD_DIR,
   limits: {
     fileSize: 50 * 1024 * 1024, // 50 MB per file
-    files:    30,               // max 30 files in batch
+    files: 30,
   },
   fileFilter: (req, file, cb) => {
     const allowed = [
-      "audio/mpeg",    // mp3
-      "audio/flac",    // flac
-      "audio/x-flac",
-      "audio/mp4",     // m4a
-      "audio/x-m4a",
-      "audio/wav",     // wav
-      "audio/x-wav",
-      "audio/ogg",     // ogg
-      "audio/webm",    // webm
-      "audio/aac",     // aac
-      "audio/opus",    // opus
-      "audio/oga",     // oga
+      "audio/mpeg", "audio/flac", "audio/x-flac",
+      "audio/mp4", "audio/x-m4a",
+      "audio/wav", "audio/x-wav",
+      "audio/ogg", "audio/webm",
+      "audio/aac", "audio/opus", "audio/oga",
     ];
     if (allowed.includes(file.mimetype)) {
       cb(null, true);
@@ -68,15 +73,33 @@ app.post("/api/tag/upload", upload.single("audio"), processFile);
 // Batch-file tagging
 app.post("/api/tag/batch", upload.array("audio"), processBatch);
 
+// View fingerprinting stats (DEV only)
+app.get("/api/stats", (req, res) => {
+  const statsPath = path.join(__dirname, "cache", "fingerprintStats.json");
+  if (fs.existsSync(statsPath)) {
+    const stats = JSON.parse(fs.readFileSync(statsPath, "utf-8"));
+    res.json(stats);
+  } else {
+    res.status(404).json({ error: "Stats file not found." });
+  }
+});
+
 // ─── Cleanup ────────────────────────────────────────────────────────────────
-// Every 15 minutes, delete uploads older than 15 minutes
 setInterval(() => {
   cleanupUploads(UPLOAD_DIR, 15);
-}, 15 * 60 * 1000);
+}, 15 * 60 * 1000); // every 15 mins
 
-// On exit, purge everything
 process.on("exit", () => {
   cleanupUploads(UPLOAD_DIR, 0);
+});
+
+// ─── Error Handling ─────────────────────────────────────────────────────────
+process.on("uncaughtException", err => {
+  console.error("💥 Uncaught Exception:", err);
+});
+
+process.on("unhandledRejection", err => {
+  console.error("💥 Unhandled Rejection:", err);
 });
 
 // ─── Launch ─────────────────────────────────────────────────────────────────
