@@ -1,4 +1,4 @@
-const fetch = require("node-fetch");
+const fetch = require("./fetch"); // ✅ dynamic import safe
 
 /**
  * Search MusicBrainz for a recording by artist + title.
