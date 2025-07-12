@@ -4,7 +4,7 @@ const { exec } = require("child_process");
 
 const { getBestFingerprintMatch } = require("../utils/fingerprint");
 const fetch = require("../utils/fetch");
-const logger = require("../utils/logger");
+const { log, warn, logError, logMatch, updateStats } = require("../utils/logger");
 
 function runCommand(command) {
   return new Promise((resolve, reject) => {
@@ -24,11 +24,12 @@ async function handleTagging(filePath) {
   const baseName = path.basename(filePath, extension);
   const dir = path.dirname(filePath);
 
-  logger.log(`🔍 [START] Processing file: ${filePath}`);
+  log(`🔍 [START] Processing file: ${filePath}`);
 
   const match = await getBestFingerprintMatch(filePath);
   if (!match || !match.recording) {
-    logger.warn(`❌ [MISS] No match found for: ${filePath}`);
+    warn(`❌ [MISS] No match found for: ${filePath}`);
+    updateStats({ success: false });
     return { success: false, message: "Track could not be identified." };
   }
 
@@ -42,21 +43,21 @@ async function handleTagging(filePath) {
   const taggedName = `${artist} - ${title}${extension}`;
   const outputPath = path.join(dir, taggedName);
 
-  logger.log(`✅ [MATCH] Source: ${match.method.toUpperCase()}`);
-  logger.log(`🎵 Title: ${title}`);
-  logger.log(`🎤 Artist: ${artist}`);
-  logger.log(`💽 Album: ${album}`);
-  logger.log(`📆 Year: ${year}`);
-  logger.log(`📊 Confidence Score: ${score}`);
+  log(`✅ [MATCH] Source: ${match.method.toUpperCase()}`);
+  log(`🎵 Title: ${title}`);
+  log(`🎤 Artist: ${artist}`);
+  log(`💽 Album: ${album}`);
+  log(`📆 Year: ${year}`);
+  log(`📊 Confidence Score: ${score}`);
 
-  // FFmpeg args
+  // FFmpeg base args
   const args = [
     `-i "${filePath}"`,
     `-metadata title="${title}"`,
     `-metadata artist="${artist}"`,
     `-metadata album="${album}"`,
     `-metadata date="${year}"`,
-    `-c:a libmp3lame`,           // ensure output has audio
+    `-c:a libmp3lame`,
     `-b:a 192k`,
     `-y "${outputPath}"`
   ];
@@ -69,22 +70,32 @@ async function handleTagging(filePath) {
       const buf = await img.arrayBuffer();
       fs.writeFileSync(coverPath, Buffer.from(buf));
       args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
-      logger.log(`🖼️ Cover art embedded: ${r.coverArt}`);
+      log(`🖼️ Cover art embedded: ${r.coverArt}`);
     } catch (e) {
-      logger.warn(`⚠️ Failed to fetch cover art: ${e.message}`);
+      warn(`⚠️ Failed to fetch cover art: ${e.message}`);
     }
   }
 
-  const ffmpegCmd = `ffmpeg ${args.join(" ")}`;
   try {
+    const ffmpegCmd = `ffmpeg ${args.join(" ")}`;
     await runCommand(ffmpegCmd);
-    logger.log(`✅ [DONE] Tagged file saved as: ${outputPath}`);
+    log(`✅ [DONE] Tagged file saved as: ${outputPath}`);
 
-    // Log metadata JSON
+    // Store JSON metadata
     const metaPath = path.join("cache", `${baseName}.json`);
     fs.writeFileSync(metaPath, JSON.stringify({
       title, artist, album, year, source: match.method, score
     }, null, 2));
+
+    logMatch({
+      input: path.basename(filePath),
+      output: taggedName,
+      title, artist, album, year,
+      score,
+      source: match.method
+    });
+
+    updateStats({ success: true, source: match.method });
 
     return {
       success: true,
@@ -93,7 +104,8 @@ async function handleTagging(filePath) {
       metadata: { title, artist, album, year, source: match.method, score }
     };
   } catch (err) {
-    logger.error(`❌ [ERROR] FFmpeg failed on ${filePath}: ${err}`);
+    logError(`❌ [ERROR] FFmpeg failed on ${filePath}: ${err}`);
+    updateStats({ success: false });
     return { success: false, message: "Tagging failed." };
   }
 }
@@ -112,15 +124,11 @@ async function processBatch(req, res) {
     return res.status(400).json({ success: false, message: "No files uploaded" });
 
   const results = await Promise.all(req.files.map(file => handleTagging(file.path)));
-
-  const taggedFiles = results
-    .filter(r => r.success)
-    .map(r => r.output);
+  const taggedFiles = results.filter(r => r.success).map(r => r.output);
 
   if (!taggedFiles.length)
     return res.status(500).json({ success: false, message: "No files could be tagged." });
 
-  // Zip logic moved elsewhere
   const { zipFiles } = require("../utils/zipFiles");
   const zipPath = await zipFiles(taggedFiles);
 
