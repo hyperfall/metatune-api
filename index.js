@@ -1,4 +1,3 @@
-// index.js
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -73,7 +72,7 @@ app.post("/api/tag/upload", upload.single("audio"), processFile);
 // Batch-file tagging
 app.post("/api/tag/batch", upload.array("audio"), processBatch);
 
-// View fingerprinting stats (DEV only)
+// Fingerprint stats (DEV)
 app.get("/api/stats", (req, res) => {
   const statsPath = path.join(__dirname, "cache", "fingerprintStats.json");
   if (fs.existsSync(statsPath)) {
@@ -82,6 +81,27 @@ app.get("/api/stats", (req, res) => {
   } else {
     res.status(404).json({ error: "Stats file not found." });
   }
+});
+
+// 📂 View logs/debug cache files
+app.get("/logs/:file", (req, res) => {
+  const allowedDirs = ["cache", "logs"];
+  const file = req.params.file;
+  let filePath = null;
+
+  for (const dir of allowedDirs) {
+    const fullPath = path.join(__dirname, dir, file);
+    if (fs.existsSync(fullPath)) {
+      filePath = fullPath;
+      break;
+    }
+  }
+
+  if (!filePath) {
+    return res.status(404).send("Log file not found.");
+  }
+
+  res.sendFile(filePath);
 });
 
 // ─── Cleanup ────────────────────────────────────────────────────────────────
