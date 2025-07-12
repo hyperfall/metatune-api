@@ -14,6 +14,7 @@ dotenv.config();
 console.log(`🪵 Logging is ${process.env.DEBUG_LOGGING === "true" ? "ENABLED" : "DISABLED"}`);
 
 const app = express();
+// preserve original client IP for rate-limiting
 app.set("trust proxy", true);
 
 const port = process.env.PORT || 3000;
@@ -22,9 +23,11 @@ const port = process.env.PORT || 3000;
 app.use(helmet());
 // rate limiter (restrict to 60 requests/min per IP)
 app.use(rateLimit({
-  windowMs: 60 * 1000,  // 1 minute
-  max: 60,              // per IP
-  trustProxy: false     // prevent permissive trust-proxy bypass
+  windowMs: 60 * 1000,    // 1 minute
+  max: 60,                // max requests per IP
+  standardHeaders: true,  // return rate limit info in RateLimit-* headers
+  legacyHeaders: false,   // disable X-RateLimit-* headers
+  trustProxy: false       // ignore trust proxy when calculating IP
 }));
 app.use(cors({
   origin: process.env.ALLOWED_ORIGIN?.split(",") || "*",
