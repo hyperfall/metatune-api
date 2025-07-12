@@ -8,7 +8,7 @@ const { getBestFingerprintMatch } = require("../utils/fingerprint");
 const normalizeTitle = require("../utils/normalizeTitle");
 const { cleanupFiles } = require("../utils/cleanupUploads");
 const { logToDB } = require("../utils/db");
-const { zipTaggedFiles } = require("../utils/zipFiles"); // ✅ Corrected import
+const { zipFiles } = require("../utils/zipFiles"); // ✅ Correct
 const { getOfficialAlbumInfo } = require("../utils/musicbrainzHelper");
 
 function runCommand(command) {
@@ -166,7 +166,7 @@ async function processBatch(req, res) {
   if (!taggedFiles.length)
     return res.status(500).json({ success: false, message: "No files could be tagged." });
 
-  const zipPath = await zipTaggedFiles(taggedFiles); // ✅ fixed usage
+  const zipPath = await zipFiles(taggedFiles); // ✅ Matches the import
   res.download(zipPath, path.basename(zipPath));
 }
 
