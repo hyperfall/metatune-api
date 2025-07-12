@@ -1,3 +1,5 @@
+// controllers/tagController.js
+
 const fs = require("fs");
 const path = require("path");
 const { exec } = require("child_process");
@@ -10,7 +12,10 @@ const { scoreFusionMatch } = require("../utils/fusionScorer");
 const { cleanupFiles } = require("../utils/cleanupUploads");
 const { logToDB } = require("../utils/db");
 const { zipFiles } = require("../utils/zipFiles");
-const { getOfficialAlbumInfo, getCoverArtByMetadata } = require("../utils/musicbrainzHelper");
+const {
+  getOfficialAlbumInfo,
+  getCoverArtByMetadata
+} = require("../utils/musicbrainzHelper");
 const normalizeTitle = require("../utils/normalizeTitle");
 
 function runCommand(command) {
@@ -39,15 +44,15 @@ async function handleTagging(filePath, attempt = 1) {
   const debugPath = path.join("cache", `${base}.json`);
   const publicLogPath = path.join("logs", `${base}-match-log.json`);
 
-  logger.log(`🔍 [START] ${filePath}`);
+  logger.log(`🔍 [START] Processing ${filePath}`);
 
-  // Step 1: Fingerprint Matching
+  // 1) Fingerprint → ACRCloud/AcoustID with MBID
   let match;
   try {
     match = await getBestFingerprintMatch(filePath);
   } catch (err) {
     if (attempt === 1) {
-      logger.warn("🔁 Retrying fingerprint...");
+      logger.warn("🔁 Retrying fingerprint attempt...");
       return await handleTagging(filePath, 2);
     }
     logger.error(`🧠 Fingerprint failed: ${err.message}`);
@@ -55,49 +60,67 @@ async function handleTagging(filePath, attempt = 1) {
   }
 
   if (!match?.recording || match.score < 60) {
-    logger.warn(`⚠️ Low fingerprint confidence (${match?.score || 0}). Skipping.`);
+    logger.warn(`⚠️ Low fingerprint confidence (${match?.score || 0}). Aborting.`);
     return { success: false, message: "No confident match found." };
   }
 
-  const r = match.recording;
-  const rawTitle = r.title || base;
-  const rawArtist = r.artist || "Unknown Artist";
+  const rec = match.recording;
+  const rawTitle  = rec.title  || base;
+  const rawArtist = rec.artist || "Unknown Artist";
+  const recordingMbid = rec.mbid || "";  // MusicBrainz recording ID
 
-  const title = sanitize(normalizeTitle(rawTitle));
+  const title  = sanitize(normalizeTitle(rawTitle));
   const artist = sanitize(normalizeTitle(rawArtist));
 
-  // Step 2: Album Info
-  const albumData = await getOfficialAlbumInfo(artist, title);
-  const album = sanitize(normalizeTitle(albumData?.album || r.album || "Unknown Album"));
-  const year = albumData?.year || r.date || "2023";
-  const coverUrl = albumData?.coverUrl;
-  const genre = r.genre || "";
+  // 2) Extract original metadata (tags + technical)
+  const original = await extractOriginalMetadata(filePath);
+  logger.log("📂 Original tags:", {
+    title: original.title,
+    artist: original.artist,
+    album: original.album,
+    year: original.year,
+    duration: original.duration,
+    bitRate: original.bitRate
+  });
 
-  const score = match.score || 0;
+  // 3) Album lookup (MBID-centric with year hint)
+  const lookupYear = original.year || rec.date || "";
+  const albumData = await getOfficialAlbumInfo(artist, title, lookupYear, recordingMbid);
+  logger.log(
+    `🔎 Album lookup via ${recordingMbid ? "MBID" : "search"} ` +
+    `(MBID=${recordingMbid}, year=${lookupYear}) →`,
+    albumData ? albumData.album : "none"
+  );
+
+  const album = sanitize(normalizeTitle(albumData?.album   || rec.album   || original.album || "Unknown Album"));
+  const year  =        albumData?.year    || rec.date     || original.year    || "2023";
+  const coverUrl =      albumData?.coverUrl              || "";
+
+  const genre  = rec.genre || original.genre || "";
+
+  const score  = match.score || 0;
   const source = match.method || "unknown";
 
   const finalMetadata = { title, artist, album, year, genre, score, source };
 
-  // Step 3: Original Metadata & Fusion Score
-  const original = await extractOriginalMetadata(filePath);
+  // 4) Fusion scoring
   const fusion = scoreFusionMatch(filePath, finalMetadata, original);
-
-  logger.log(`📊 Score: ${score} | 🔎 Source: ${source}`);
+  logger.log(`📊 Fingerprint Score: ${score} | Source: ${source}`);
   logger.log(`🧠 Fusion Score: ${fusion.score} (${fusion.confidence})`);
-  logger.log("🔬 Fusion Debug:", fusion.debug);
+  logger.log("🔬 Fusion breakdown:", fusion.debug);
 
   if (fusion.score < 0.5) {
-    logger.warn(`❌ [FUSION FAIL] Score ${fusion.score} < 0.5. Skipping file.`);
+    logger.warn(`❌ [FUSION FAIL] ${fusion.score} < 0.5. Aborting.`);
     return { success: false, message: "Metadata mismatch." };
   }
 
+  logger.log(`✅ [MATCH] ${artist} — ${title}`);
+  logger.log(`💽 Album: ${album} | 📆 Year: ${year}`);
+
+  // 5) Build FFmpeg args
   const taggedName = `${artist} - ${title}${ext}`;
-  const output = path.join(dir, taggedName);
+  const output     = path.join(dir, taggedName);
 
-  logger.log(`✅ [MATCH] ${title} by ${artist}`);
-  logger.log(`💽 Album: ${album} | 📆 Year: ${year} | 🎼 Genre: ${genre || "N/A"}`);
-
-  // Step 4: FFmpeg Tagging
   let args = [
     `-i "${filePath}"`,
     `-metadata title="${title}"`,
@@ -105,13 +128,13 @@ async function handleTagging(filePath, attempt = 1) {
     `-metadata album="${album}"`,
     `-metadata date="${year}"`,
     genre ? `-metadata genre="${sanitize(genre)}"` : "",
-    `-metadata comment="Tagged by MetaTune | Score: ${fusion.score} (${fusion.confidence})"`,
+    `-metadata comment="Tagged by MetaTune | Fusion: ${fusion.score} (${fusion.confidence})"`,
     `-c:a libmp3lame`,
     `-b:a 192k`,
     `-y "${output}"`
   ].filter(Boolean);
 
-  // Step 5: Cover Art Embedding
+  // 6) Embed cover art
   let embeddedCover = false;
 
   if (coverUrl) {
@@ -121,36 +144,39 @@ async function handleTagging(filePath, attempt = 1) {
       fs.writeFileSync(coverPath, Buffer.from(buf));
       args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
       embeddedCover = true;
-      logger.log(`🖼️ Cover art embedded from MusicBrainz`);
+      logger.log(`🖼️ Embedded cover from MusicBrainz`);
     } catch (err) {
-      logger.warn(`⚠️ MusicBrainz cover failed: ${err.message}`);
+      logger.warn(`⚠️ Failed MusicBrainz cover: ${err.message}`);
     }
   }
 
+  // Secondary fallback
   if (!embeddedCover) {
     try {
-      const fallback = await getCoverArtByMetadata(artist, title, album, year);
-      if (fallback?.coverUrl) {
-        const res = await fetch(fallback.coverUrl);
+      const fb = await getCoverArtByMetadata(artist, title, album, year);
+      if (fb?.coverUrl) {
+        const res = await fetch(fb.coverUrl);
         const buf = await res.arrayBuffer();
         fs.writeFileSync(coverPath, Buffer.from(buf));
         args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
-        logger.log(`🖼️ Cover art embedded via metadata fallback`);
+        embeddedCover = true;
+        logger.log(`🖼️ Embedded cover via metadata fallback`);
       } else {
-        logger.warn(`⚠️ No fallback cover art available`);
+        logger.warn(`⚠️ No fallback cover art found`);
       }
     } catch (err) {
-      logger.warn(`⚠️ Metadata fallback cover failed: ${err.message}`);
+      logger.warn(`⚠️ Fallback cover failed: ${err.message}`);
     }
   }
 
-  // Step 6: Save Final File
+  // 7) Run FFmpeg & finalize
   try {
     await runCommand(`ffmpeg ${args.join(" ")}`);
-    fs.writeFileSync(debugPath, JSON.stringify({ match, finalMetadata, fusion }, null, 2));
+    // Save a combined debug JSON
+    fs.writeFileSync(debugPath, JSON.stringify({ match, original, albumData, finalMetadata, fusion }, null, 2));
     fs.writeFileSync(publicLogPath, JSON.stringify({ match, finalMetadata, fusion }, null, 2));
 
-    logger.log(`✅ [DONE] ${output}`);
+    logger.log(`✅ [DONE] Saved to ${output}`);
     logger.logMatch(finalMetadata);
     logger.updateStats({ source, success: true });
     await logToDB?.(finalMetadata);
@@ -158,36 +184,33 @@ async function handleTagging(filePath, attempt = 1) {
     cleanupFiles([filePath, coverPath]);
     return { success: true, message: "Tagged successfully", output, metadata: finalMetadata };
   } catch (err) {
-    logger.error(`❌ [FFmpeg] ${err}`);
+    logger.error(`❌ FFmpeg failed: ${err}`);
     cleanupFiles([filePath, coverPath]);
     return { success: false, message: "Tagging failed." };
   }
 }
 
-// ROUTES
+// Express routes
 
 async function processFile(req, res) {
-  if (!req.file)
+  if (!req.file) {
     return res.status(400).json({ success: false, message: "No file uploaded" });
-
+  }
   const result = await handleTagging(req.file.path);
-  if (!result.success)
-    return res.status(500).json(result);
-
+  if (!result.success) return res.status(500).json(result);
   res.download(result.output, path.basename(result.output));
 }
 
 async function processBatch(req, res) {
-  if (!req.files?.length)
+  if (!req.files?.length) {
     return res.status(400).json({ success: false, message: "No files uploaded" });
-
+  }
   const results = await Promise.all(req.files.map(f => handleTagging(f.path)));
-  const taggedFiles = results.filter(r => r.success).map(r => r.output);
-
-  if (!taggedFiles.length)
+  const outputs = results.filter(r => r.success).map(r => r.output);
+  if (!outputs.length) {
     return res.status(500).json({ success: false, message: "No files tagged." });
-
-  const zipPath = await zipFiles(taggedFiles);
+  }
+  const zipPath = await zipFiles(outputs);
   res.download(zipPath, path.basename(zipPath));
 }
 
