@@ -77,8 +77,10 @@ async function queryMusicBrainzByFingerprint(fp, logPrefix) {
       }
     });
     const results = resp.data.results || [];
-    fs.writeFileSync(path.join("logs", `${logPrefix}-acoustid.json`),
-                     JSON.stringify(results, null, 2));
+    fs.writeFileSync(
+      path.join("logs", `${logPrefix}-acoustid.json`),
+      JSON.stringify(results, null, 2)
+    );
 
     if (!results.length) return null;
     const top = results[0];
@@ -105,92 +107,93 @@ async function queryMusicBrainzByFingerprint(fp, logPrefix) {
   }
 }
 
-/** Primary ACRCloud fingerprint lookup */
-async function queryAcrcloud(buffer, logPrefix) {
+/** Primary ACRCloud fingerprint lookup returns *all* candidates */
+async function queryAcrcloudAll(buffer, logPrefix) {
   try {
     const result = await ACR.identify(buffer);
-    fs.writeFileSync(path.join("logs", `${logPrefix}-acr.json`),
-                     JSON.stringify(result, null, 2));
-    const m = result.metadata?.music?.[0];
-    if (!m) return null;
-
-    // ACRCloud may embed a MusicBrainz recording ID
-    const ext = m.external_metadata?.musicbrainz?.recording?.id || null;
-    return {
+    fs.writeFileSync(
+      path.join("logs", `${logPrefix}-acr.json`),
+      JSON.stringify(result, null, 2)
+    );
+    const arr = result.metadata?.music || [];
+    return arr.map(m => ({
       method: "acrcloud",
       score: m.score || 0,
       recording: {
-        mbid: ext,
+        mbid: m.external_metadata?.musicbrainz?.recording?.id || null,
         title: m.title,
         artist: m.artists?.map(a => a.name).join(", "),
         album: m.album?.name || null,
         date: m.release_date?.slice(0,4) || null,
         genre: m.genres?.[0]?.name || null
       }
-    };
+    }));
   } catch (err) {
     logger.error(`[ACRCloud] ${err.message}`);
-    return null;
+    return [];
   }
 }
 
 /**
- * Orchestrator: 
- * 1) fpcalc → fingerprint+duration 
- * 2) ACRCloud (retry once) 
- * 3) if compilation‐style album → MusicBrainz text fallback 
- * 4) else if no ACRCloud result → AcoustID→MusicBrainz 
- * Attaches `duration` to every recording.
+ * Core: return a ranked list of fingerprint candidates
+ */
+async function getFingerprintCandidates(filePath) {
+  // 1) duration & prefix
+  const fp     = await runFpcalc(filePath);
+  const buffer = fs.readFileSync(filePath);
+  const prefix = path.basename(filePath, path.extname(filePath));
+
+  // 2) all ACRCloud matches (sorted by score desc)
+  let carts = await queryAcrcloudAll(buffer, prefix);
+  carts.sort((a,b) => (b.score||0) - (a.score||0));
+
+  // 3) attach duration, and replace any compilation‐style with MB Fallback
+  const candidates = [];
+  for (const c of carts) {
+    c.recording.duration = fp.duration;
+    if (isCompilation(c.recording.album)) {
+      logger.warn(`[fallback] Compilation detected (“${c.recording.album}”), text-searching…`);
+      const fb = await queryMusicBrainzFallback(
+        c.recording.artist,
+        c.recording.title,
+        prefix
+      );
+      if (fb) {
+        fb.recording.duration = fp.duration;
+        candidates.push(clean(fb));
+        continue;
+      }
+    }
+    candidates.push(clean(c));
+  }
+
+  // 4) if no ACRCloud at all, or after them, try AcoustID→MB
+  const acoustid = await queryMusicBrainzByFingerprint(fp, prefix);
+  if (acoustid) {
+    acoustid.recording.duration = fp.duration;
+    candidates.push(clean(acoustid));
+  }
+
+  return candidates;
+}
+
+/**
+ * Backwards-compatible: just pick the #1 candidate
  */
 async function getBestFingerprintMatch(filePath) {
-  try {
-    const fp = await runFpcalc(filePath);
-    const buffer = fs.readFileSync(filePath);
-    const prefix = path.basename(filePath, path.extname(filePath));
-
-    // ACRCloud
-    let match = await queryAcrcloud(buffer, prefix);
-    if (!match) {
-      logger.warn("🔁 Retrying ACRCloud");
-      match = await queryAcrcloud(buffer, prefix);
-    }
-    if (match) {
-      match.recording.duration = fp.duration;
-      if (isCompilation(match.recording.album)) {
-        logger.warn(`[fallback] Compilation detected (“${match.recording.album}”), falling back...`);
-        const fb = await queryMusicBrainzFallback(
-          match.recording.artist,
-          match.recording.title,
-          prefix
-        );
-        if (fb) {
-          fb.recording.duration = fp.duration;
-          return clean(fb);
-        }
-      }
-      return clean(match);
-    }
-
-    // AcoustID → MusicBrainz
-    const alt = await queryMusicBrainzByFingerprint(fp, prefix);
-    if (alt) {
-      alt.recording.duration = fp.duration;
-      return clean(alt);
-    }
-
-    return null;
-  } catch (err) {
-    logger.error(`[Fingerprinting] ${err.message}`);
-    return null;
-  }
+  const cands = await getFingerprintCandidates(filePath);
+  return cands[0] || null;
 }
 
 /** Normalize title & album text */
 function clean(match) {
   const r = match.recording;
-  r.title = normalizeTitle(r.title);
-  r.album = normalizeTitle(r.album);
+  r.title    = normalizeTitle(r.title);
+  r.album    = normalizeTitle(r.album);
   return match;
 }
 
-module.exports = { getBestFingerprintMatch };
+module.exports = {
+  getFingerprintCandidates,
+  getBestFingerprintMatch
+};
