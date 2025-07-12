@@ -28,4 +28,4 @@ async function zipTaggedFiles(filePaths) {
   });
 }
 
-module.exports = { zipTaggedFiles };
+module.exports = { zipFiles: zipTaggedFiles };
