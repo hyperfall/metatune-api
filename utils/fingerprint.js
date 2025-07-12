@@ -6,6 +6,8 @@ const axios = require("axios");
 const normalizeTitle = require("./normalizeTitle");
 const fetchAlbumArt = require("./fetchAlbumArt");
 const logger = require("./logger");
+const fs = require("fs");
+const path = require("path");
 
 const ACR = new acrcloud({
   host: process.env.ACR_HOST,
@@ -27,32 +29,28 @@ function runFpcalc(filePath) {
   });
 }
 
-function getBestRelease(releases = []) {
-  const sorted = releases.filter(r => r.status === "Official" && r.title && r.date).sort(
-    (a, b) => new Date(a.date) - new Date(b.date)
-  );
-  return sorted[0] || releases[0] || null;
-}
-
-async function queryMusicBrainzByFingerprint(fp) {
+async function queryMusicBrainzByFingerprint(fp, logPrefix) {
   try {
     const response = await axios.get("https://api.acoustid.org/v2/lookup", {
       params: {
         client: process.env.ACOUSTID_KEY,
         fingerprint: fp.fingerprint,
         duration: fp.duration,
-        meta: "recordings+releases+releasegroups+compress",
+        meta: "recordings+releasegroups+compress",
       },
     });
 
     const results = response.data.results || [];
+    const logPath = path.join("logs", `${logPrefix}-acoustid-raw.json`);
+    fs.writeFileSync(logPath, JSON.stringify(results, null, 2));
+
     if (!results.length) return null;
 
     const top = results[0];
     if (!top.recordings || !top.recordings.length) return null;
 
     const rec = top.recordings[0];
-    const bestRelease = getBestRelease(rec.releases);
+    const bestRelease = rec.releasegroups?.[0];
 
     return {
       method: "musicbrainz",
@@ -60,9 +58,9 @@ async function queryMusicBrainzByFingerprint(fp) {
       recording: {
         title: rec.title,
         artist: rec.artists?.map(a => a.name).join(", "),
-        album: bestRelease?.title || rec.releasegroups?.[0]?.title,
-        date: bestRelease?.date?.slice(0, 4) || rec.releasegroups?.[0]?."first-release-date"?.slice(0, 4),
-        mbid: bestRelease?.id || rec.releasegroups?.[0]?.id,
+        album: bestRelease?.title || null,
+        date: bestRelease?.["first-release-date"]?.slice(0, 4) || null,
+        mbid: bestRelease?.id,
         genre: rec.tags?.[0]?.name || null,
       },
     };
@@ -72,9 +70,12 @@ async function queryMusicBrainzByFingerprint(fp) {
   }
 }
 
-async function queryAcrcloud(buffer) {
+async function queryAcrcloud(buffer, logPrefix) {
   try {
     const result = await ACR.identify(buffer);
+    const logPath = path.join("logs", `${logPrefix}-acr-raw.json`);
+    fs.writeFileSync(logPath, JSON.stringify(result, null, 2));
+
     const metadata = result?.metadata?.music?.[0];
     if (!metadata) return null;
 
@@ -98,24 +99,31 @@ async function queryAcrcloud(buffer) {
 async function getBestFingerprintMatch(filePath) {
   try {
     const fp = await runFpcalc(filePath);
-    const fileBuffer = require("fs").readFileSync(filePath);
+    const fileBuffer = fs.readFileSync(filePath);
+    const baseName = path.basename(filePath, path.extname(filePath));
 
-    let match = await queryAcrcloud(fileBuffer);
+    // Try ACRCloud first
+    let match = await queryAcrcloud(fileBuffer, baseName);
     if (!match) {
       logger.warn("🔁 Retrying ACRCloud...");
-      match = await queryAcrcloud(fileBuffer);
+      match = await queryAcrcloud(fileBuffer, baseName);
     }
 
     if (match) {
       const art = await fetchAlbumArt(match.recording.mbid);
-      match.recording.coverArt = art?.imageBuffer ? `data:${art.mime};base64,${art.imageBuffer.toString("base64")}` : null;
+      match.recording.coverArt = art?.imageBuffer
+        ? `data:${art.mime};base64,${art.imageBuffer.toString("base64")}`
+        : null;
       return clean(match);
     }
 
-    const alt = await queryMusicBrainzByFingerprint(fp);
+    // Fallback to MusicBrainz
+    const alt = await queryMusicBrainzByFingerprint(fp, baseName);
     if (alt) {
       const art = await fetchAlbumArt(alt.recording.mbid);
-      alt.recording.coverArt = art?.imageBuffer ? `data:${art.mime};base64,${art.imageBuffer.toString("base64")}` : null;
+      alt.recording.coverArt = art?.imageBuffer
+        ? `data:${art.mime};base64,${art.imageBuffer.toString("base64")}`
+        : null;
       return clean(alt);
     }
 
