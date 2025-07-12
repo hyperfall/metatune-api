@@ -5,11 +5,11 @@ const { exec } = require("child_process");
 const fetch = require("../utils/fetch");
 const logger = require("../utils/logger");
 const { getBestFingerprintMatch } = require("../utils/fingerprint");
-const fetchAlbumArt = require("../utils/fetchAlbumArt");
 const normalizeTitle = require("../utils/normalizeTitle");
 const { cleanupFiles } = require("../utils/cleanupUploads");
 const { logToDB } = require("../utils/db");
 const { zipFiles } = require("../utils/zipFiles");
+const { getOfficialAlbumInfo } = require("../utils/musicbrainzHelper");
 
 function runCommand(command) {
   return new Promise((resolve, reject) => {
@@ -59,11 +59,14 @@ async function handleTagging(filePath, attempt = 1) {
   }
 
   const r = match.recording;
-
   const title = sanitize(normalizeTitle(r.title || baseName));
   const artist = sanitize(normalizeTitle(r.artist || "Unknown Artist"));
-  const album = sanitize(normalizeTitle(r.album || r.release || "Unknown Album"));
-  const year = r.date || "2023";
+
+  // 🔍 Fallback to MusicBrainz for accurate album & cover
+  const fallback = await getOfficialAlbumInfo(artist, title);
+
+  const album = sanitize(normalizeTitle(fallback?.album || r.album || r.release || "Unknown Album"));
+  const year = fallback?.year || r.date || "2023";
   const genre = r.genre || "";
   const score = match.score || 0;
   const source = match.method || "unknown";
@@ -89,15 +92,16 @@ async function handleTagging(filePath, attempt = 1) {
     `-y "${outputPath}"`
   ].filter(Boolean);
 
-  // Handle embedded cover art if available
-  if (r.coverArt) {
+  // 🖼️ Embed fallback cover art if available
+  if (fallback?.coverUrl) {
     try {
-      const imageBuffer = Buffer.from(r.coverArt.split(",")[1], "base64");
+      const res = await fetch(fallback.coverUrl);
+      const imageBuffer = await res.buffer();
       fs.writeFileSync(coverPath, imageBuffer);
       args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
-      logger.log(`🖼️ Cover art embedded from metadata`);
+      logger.log(`🖼️ Cover art embedded from MusicBrainz`);
     } catch (e) {
-      logger.warn(`⚠️ Failed to attach embedded cover art: ${e.message}`);
+      logger.warn(`⚠️ Failed to fetch or embed cover art: ${e.message}`);
     }
   }
 
