@@ -8,10 +8,6 @@ const logger = require("./logger");
 const fs = require("fs");
 const path = require("path");
 
-// NEW imports for text-search fallback
-const { extractOriginalMetadata } = require("./metadataExtractor");
-const { searchRecording } = require("./musicbrainzHelper");
-
 const ACR = new acrcloud({
   host: process.env.ACR_HOST,
   access_key: process.env.ACR_KEY,
@@ -32,28 +28,43 @@ function runFpcalc(filePath) {
   });
 }
 
-/** Strip to lowercase alphanumeric only */
+/** Lowercase alphanumeric only */
 function normalizeStr(str = "") {
   return str.toLowerCase().replace(/[^a-z0-9]/g, "").trim();
 }
 
-/** Extract and normalize bare filename (no extension) */
-function extractNormalizedFilename(filePath) {
+/** Extract artist/title parts from filename */
+function extractFileParts(filePath) {
   const base = path.basename(filePath, path.extname(filePath));
-  return normalizeStr(base);
+  const clean = base.replace(/\s+/g, " ").trim();
+  const parts = clean.split(/[-–—]/).map(p => normalizeStr(p));
+  if (parts.length === 2) {
+    return { artist: parts[0], title: parts[1], raw: normalizeStr(base) };
+  }
+  return { artist: "", title: "", raw: normalizeStr(base) };
 }
 
-/** Heuristic for “compilation”-style album names */
+/** Fuzzy-match: exact=1, contains=0.7, else 0 */
+function fuzzyScore(a = "", b = "") {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.includes(b) || b.includes(a)) return 0.7;
+  return 0;
+}
+
+/** Heuristic for “compilation”‐style album names */
 function isCompilation(albumName) {
   const keywords = ["hits", "greatest", "now", "best", "compilation", "nrj"];
   return keywords.some(k => albumName?.toLowerCase().includes(k));
 }
 
-/** Fallback: text search on MusicBrainz if album looks like a compilation */
+/** Properly‐quoted text search on MusicBrainz if album looks like a compilation */
 async function queryMusicBrainzFallback(artist, title, prefix) {
   try {
+    // quote both fields
+    const q = `recording:"${title}" AND artist:"${artist}"`;
     const resp = await axios.get("https://musicbrainz.org/ws/2/recording", {
-      params: { query: `${title} AND artist:${artist}`, fmt: "json", limit: 5 },
+      params: { query: q, fmt: "json", limit: 5 },
       headers: { "User-Agent": "MetaTune/1.0 (metatune@app)" }
     });
     const recs = resp.data.recordings || [];
@@ -87,8 +98,8 @@ async function queryMusicBrainzByFingerprint(fp, prefix) {
       params: {
         client: process.env.ACOUSTID_KEY,
         fingerprint: fp.fingerprint,
-        duration: fp.duration,
-        meta: "recordings+releasegroups+compress"
+        duration:    fp.duration,
+        meta:        "recordings+releasegroups+compress"
       }
     });
     const results = resp.data.results || [];
@@ -122,7 +133,7 @@ async function queryMusicBrainzByFingerprint(fp, prefix) {
   }
 }
 
-/** Primary ACRCloud lookup returning *all* hits */
+/** Pull **all** ACRCloud hits (unsorted) */
 async function queryAcrcloudAll(buffer, prefix) {
   try {
     const result = await ACR.identify(buffer);
@@ -150,23 +161,24 @@ async function queryAcrcloudAll(buffer, prefix) {
 }
 
 /**
- * Returns an ordered list of fingerprint candidates:
- *  1) ACRCloud hits (with compilation → MusicBrainz‐fallback)
- *  2) One final AcoustID→MusicBrainz fallback
- *  3) **NEW** MusicBrainz text‐search fallback using your original tags
+ * Returns a prioritized list of fingerprint candidates:
+ * 1) ACRCloud hits **only** if they both
+ *      • are super-high confidence (≥95) **and**  
+ *      • their artist/title fuzzily match your filename,  
+ *    or if your filename literally contains artist+title.
+ *    (with a compilation fallback to MusicBrainz text‐search)
+ * 2) One final AcoustID→MusicBrainz fallback
  */
 async function getFingerprintCandidates(filePath) {
-  const fp       = await runFpcalc(filePath);
-  const buffer   = fs.readFileSync(filePath);
-  const prefix   = path.basename(filePath, path.extname(filePath));
-  const baseNorm = extractNormalizedFilename(filePath);
-
-  // grab your embedded/file metadata for text‐search fallback
-  const original = await extractOriginalMetadata(filePath);
+  const fp     = await runFpcalc(filePath);
+  const buffer = fs.readFileSync(filePath);
+  const prefix = path.basename(filePath, path.extname(filePath));
+  const parts  = extractFileParts(filePath);
+  const baseRaw= parts.raw;
 
   // 1) ACRCloud candidates
   const acrs = await queryAcrcloudAll(buffer, prefix);
-  acrs.sort((a, b) => (b.score || 0) - (a.score || 0));
+  acrs.sort((a,b) => (b.score||0) - (a.score||0));
 
   const out = [];
   for (const c of acrs) {
@@ -174,13 +186,18 @@ async function getFingerprintCandidates(filePath) {
 
     const artistNorm = normalizeStr(c.recording.artist);
     const titleNorm  = normalizeStr(c.recording.title);
-    const candNorm   = artistNorm + titleNorm;
+    const candRaw    = artistNorm + titleNorm;
 
-    if (c.score >= 95 || baseNorm.includes(candNorm)) {
+    // fuzzy-match against filename parts
+    const titleMatch  = fuzzyScore(parts.title, titleNorm);
+    const artistMatch = fuzzyScore(parts.artist, artistNorm);
+
+    const acceptAcr = c.score >= 95 && (titleMatch > 0 || artistMatch > 0);
+    const acceptRaw = baseRaw.includes(candRaw);
+
+    if (acceptAcr || acceptRaw) {
       if (isCompilation(c.recording.album)) {
-        logger.warn(
-          `[fallback] Compilation detected (“${c.recording.album}”), text-search…`
-        );
+        logger.warn(`[fallback] Compilation detected (“${c.recording.album}”), text‐search…`);
         const fb = await queryMusicBrainzFallback(
           c.recording.artist,
           c.recording.title,
@@ -200,37 +217,11 @@ async function getFingerprintCandidates(filePath) {
     }
   }
 
-  // 2) AcoustID → MusicBrainz fallback
+  // 2) always append one AcoustID→MusicBrainz fallback
   const alt = await queryMusicBrainzByFingerprint(fp, prefix);
   if (alt) {
     alt.recording.duration = fp.duration;
     out.push(clean(alt));
-  }
-
-  // 3) Text‐search fallback (using original tags/filename)
-  if (original.artist && original.title) {
-    const recs = await searchRecording(
-      original.artist,
-      original.title,
-      original.year
-    );
-    if (recs.length) {
-      const rec = recs[0];
-      const release = rec.releases?.[0] || {};
-      out.push(clean({
-        method: "text-search",
-        score: 80,  // boost so it will compete
-        recording: {
-          mbid: rec.id,
-          title: rec.title,
-          artist: rec["artist-credit"]?.map(a => a.name).join(", "),
-          album: release.title || "",
-          date: release.date?.slice(0,4) || original.year,
-          genre: null,
-          duration: fp.duration
-        }
-      }));
-    }
   }
 
   return out;
@@ -242,7 +233,7 @@ async function getBestFingerprintMatch(filePath) {
   return cands[0] || null;
 }
 
-/** Normalize recording text fields */
+/** Normalize text fields consistently */
 function clean(match) {
   const r = match.recording;
   r.title = normalizeTitle(r.title);
