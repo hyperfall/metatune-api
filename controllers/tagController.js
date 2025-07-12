@@ -51,11 +51,10 @@ async function handleTagging(filePath) {
   const original = await extractOriginalMetadata(filePath);
   logger.log("📂 Original metadata:", original);
 
-  let candidates = await getFingerprintCandidates(filePath);
-
-  // Fallback if no fingerprint candidates
+  const candidates = await getFingerprintCandidates(filePath);
   if (!candidates.length) {
     logger.warn("⚠️ No fingerprint candidates, falling back to text-only lookup");
+    // text-only fallback
     try {
       const fbInfo = await getOfficialAlbumInfo(
         original.artist,
@@ -63,7 +62,7 @@ async function handleTagging(filePath) {
         original.year
       );
       if (fbInfo) {
-        const fallbackRec = {
+        candidates.push({
           method: 'text-only',
           score: 0,
           recording: {
@@ -75,8 +74,7 @@ async function handleTagging(filePath) {
             releaseGroupMbid: fbInfo.releaseGroupMbid,
             genre: original.genre
           }
-        };
-        candidates = [fallbackRec];
+        });
       }
     } catch (err) {
       logger.error(`❌ Text-only fallback failed: ${err.message}`);
@@ -89,51 +87,29 @@ async function handleTagging(filePath) {
   let chosen = null;
   let fusionResult = null;
 
-  // 2) First pass: pick any candidate with fusion ≥ 0.6
-  for (const cand of candidates) {
-    const { method, score, recording: rec } = cand;
+  // **EARLY EXIT**: if Dejavu matched first, accept immediately
+  if (candidates[0].method === 'dejavu') {
+    const dj = candidates[0];
+    const rec = dj.recording;
     const title = sanitize(normalizeTitle(rec.title));
     const artist = sanitize(normalizeTitle(rec.artist));
-    const lookupYear = original.year || rec.date || "";
-
-    const albumData = await getOfficialAlbumInfo(
-      artist,
-      title,
-      lookupYear,
-      rec.mbid
-    );
-    const album = sanitize(normalizeTitle(
-      albumData?.album || rec.album || original.album || "Unknown Album"
-    ));
-    const year = albumData?.year || rec.date || original.year || new Date().getFullYear().toString();
-    const genre = rec.genre || original.genre || "";
-
-    const finalMetadata = {
-      title,
-      artist,
-      album,
-      year,
-      genre,
-      score,
-      source: method
-    };
-
-    fusionResult = scoreFusionMatch(filePath, finalMetadata, original);
-    logger.log(
-      `📊 Candidate [${method}] fingerprint:${score} → fusion ${fusionResult.score} (${fusionResult.confidence})`
-    );
-    logger.log("🔬 Fusion debug:", fusionResult.debug);
-
-    if (fusionResult.score >= 0.6) {
-      chosen = { cand, finalMetadata, fusionResult, albumData };
-      break;
+    // Use rec.album if provided, else lookup via MusicBrainz for consistency
+    let albumData = null;
+    if (!rec.album) {
+      albumData = await getOfficialAlbumInfo(artist, title, rec.date || '');
+      rec.album = albumData?.album || '';
+      rec.date = albumData?.year || rec.date;
     }
-  }
+    const album = sanitize(normalizeTitle(rec.album || 'Unknown Album'));
+    const year = rec.date || original.year || new Date().getFullYear().toString();
 
-  // 3) Fallback: if none ≥0.6, pick highest-scoring ≥0.5
-  if (!chosen) {
-    const scored = await Promise.all(candidates.map(async c => {
-      const { method, score: sc, recording: rec } = c;
+    const finalMetadata = { title, artist, album, year, genre: rec.genre || original.genre || '', score: dj.score, source: 'dejavu' };
+    fusionResult = scoreFusionMatch(filePath, finalMetadata, original);
+    chosen = { cand: dj, finalMetadata, fusionResult, albumData };
+  } else {
+    // 2) First pass: fusion ≥0.6
+    for (const cand of candidates) {
+      const { method, score, recording: rec } = cand;
       const title = sanitize(normalizeTitle(rec.title));
       const artist = sanitize(normalizeTitle(rec.artist));
       const lookupYear = original.year || rec.date || "";
@@ -150,42 +126,77 @@ async function handleTagging(filePath) {
       const year = albumData?.year || rec.date || original.year || new Date().getFullYear().toString();
       const genre = rec.genre || original.genre || "";
 
-      const finalMetadata = { title, artist, album, year, genre, score: sc, source: method };
-      const fusion = scoreFusionMatch(filePath, finalMetadata, original);
-      return { cand: c, finalMetadata, fusion, albumData };
-    }));
+      const finalMetadata = { title, artist, album, year, genre, score, source: method };
 
-    scored.sort((a, b) => b.fusion.score - a.fusion.score);
-    if (scored[0].fusion.score >= 0.5) {
-      logger.warn(`⚠️ No high-confidence candidates, accepting fusion ${scored[0].fusion.score}`);
-      chosen = scored[0];
-      fusionResult = chosen.fusion;
-    }
-  }
-
-  // 4) Final text-only fallback if still nothing chosen
-  if (!chosen) {
-    logger.warn("⚠️ All candidates below threshold, using final text-only fallback");
-    try {
-      const fbInfo = await getOfficialAlbumInfo(
-        original.artist,
-        original.title,
-        original.year
+      fusionResult = scoreFusionMatch(filePath, finalMetadata, original);
+      logger.log(
+        `📊 Candidate [${method}] fingerprint:${score} → fusion ${fusionResult.score} (${fusionResult.confidence})`
       );
-      if (fbInfo) {
-        const finalMetadata = {
-          title: sanitize(normalizeTitle(original.title)),
-          artist: sanitize(normalizeTitle(original.artist)),
-          album: sanitize(normalizeTitle(fbInfo.album)),
-          year: fbInfo.year,
-          genre: original.genre || "",
-          score: 0,
-          source: 'text-only'
-        };
-        chosen = { cand: { method: 'text-only' }, finalMetadata, fusionResult: { score: 0, confidence: 'fallback' }, albumData: fbInfo };
+      logger.log("🔬 Fusion debug:", fusionResult.debug);
+
+      if (fusionResult.score >= 0.6) {
+        chosen = { cand, finalMetadata, fusionResult, albumData };
+        break;
       }
-    } catch (err) {
-      logger.error(`❌ Final fallback failed: ${err.message}`);
+    }
+
+    // 3) Fallback: best ≥0.5
+    if (!chosen) {
+      const scored = await Promise.all(candidates.map(async c => {
+        const { method, score: sc, recording: rec } = c;
+        const title = sanitize(normalizeTitle(rec.title));
+        const artist = sanitize(normalizeTitle(rec.artist));
+        const lookupYear = original.year || rec.date || "";
+
+        const albumData = await getOfficialAlbumInfo(
+          artist,
+          title,
+          lookupYear,
+          rec.mbid
+        );
+        const album = sanitize(normalizeTitle(
+          albumData?.album || rec.album || original.album || "Unknown Album"
+        ));
+        const year = albumData?.year || rec.date || original.year || new Date().getFullYear().toString();
+        const genre = rec.genre || original.genre || "";
+
+        const finalMetadata = { title, artist, album, year, genre, score: sc, source: method };
+        const fusion = scoreFusionMatch(filePath, finalMetadata, original);
+        return { cand: c, finalMetadata, fusion, albumData };
+      }));
+
+      scored.sort((a, b) => b.fusion.score - a.fusion.score);
+      if (scored[0].fusion.score >= 0.5) {
+        logger.warn(`⚠️ No high-confidence candidates, accepting fusion ${scored[0].fusion.score}`);
+        chosen = scored[0];
+        fusionResult = chosen.fusion;
+      }
+    }
+
+    // 4) Final text-only fallback
+    if (!chosen) {
+      logger.warn("⚠️ All candidates below threshold, final text-only fallback");
+      try {
+        const fbInfo = await getOfficialAlbumInfo(
+          original.artist,
+          original.title,
+          original.year
+        );
+        if (fbInfo) {
+          const finalMetadata = {
+            title: sanitize(normalizeTitle(original.title)),
+            artist: sanitize(normalizeTitle(original.artist)),
+            album: sanitize(normalizeTitle(fbInfo.album)),
+            year: fbInfo.year,
+            genre: original.genre || "",
+            score: 0,
+            source: 'text-only'
+          };
+          chosen = { cand: { method: 'text-only' }, finalMetadata, fusionResult: { score: 0, confidence: 'fallback' }, albumData: fbInfo };
+        }
+      } catch (err) {
+        logger.error(`❌ Final fallback failed: ${err.message}`);
+      }
     }
   }
 
