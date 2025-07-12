@@ -14,7 +14,7 @@ const ACR = new acrcloud({
   access_secret: process.env.ACR_SECRET,
 });
 
-/** Run ffmpeg-fpcalc to extract duration & fingerprint */
+/** Run fpcalc to extract duration & fingerprint */
 function runFpcalc(filePath) {
   return new Promise((resolve, reject) => {
     exec(`fpcalc -json "${filePath}"`, (err, stdout) => {
@@ -26,6 +26,17 @@ function runFpcalc(filePath) {
       }
     });
   });
+}
+
+/** Strip to lowercase alphanumeric only */
+function normalizeStr(str = "") {
+  return str.toLowerCase().replace(/[^a-z0-9]/g, "").trim();
+}
+
+/** Extract and normalize bare filename (no extension) */
+function extractNormalizedFilename(filePath) {
+  const base = path.basename(filePath, path.extname(filePath));
+  return normalizeStr(base);
 }
 
 /** Heuristic for “compilation”‐style album names */
@@ -107,7 +118,7 @@ async function queryMusicBrainzByFingerprint(fp, prefix) {
   }
 }
 
-/** Primary ACRCloud fingerprint lookup, returns _all_ candidates */
+/** Primary ACRCloud lookup returning *all* hits */
 async function queryAcrcloudAll(buffer, prefix) {
   try {
     const result = await ACR.identify(buffer);
@@ -136,38 +147,51 @@ async function queryAcrcloudAll(buffer, prefix) {
 
 /**
  * Returns an ordered list of fingerprint candidates:
- * 1) all ACRCloud hits (with “compilation” → MusicBrainz text fallback)
- * 2) one final AcoustID→MusicBrainz fallback
+ * 1) Only those ACRCloud hits whose artist+title appear in the filename (or score ≥95),
+ *    with compilation→MusicBrainz‐text fallback,
+ * 2) One final AcoustID→MusicBrainz fallback.
  */
 async function getFingerprintCandidates(filePath) {
   const fp     = await runFpcalc(filePath);
   const buffer = fs.readFileSync(filePath);
   const prefix = path.basename(filePath, path.extname(filePath));
+  const baseNorm = extractNormalizedFilename(filePath);
 
   // 1) ACRCloud candidates
   const acrs = await queryAcrcloudAll(buffer, prefix);
-  acrs.sort((a,b) => (b.score||0) - (a.score||0));
+  acrs.sort((a, b) => (b.score || 0) - (a.score || 0));
 
   const out = [];
   for (const c of acrs) {
     c.recording.duration = fp.duration;
-    if (isCompilation(c.recording.album)) {
-      logger.warn(`[fallback] Compilation detected (“${c.recording.album}”), text-search…`);
-      const fb = await queryMusicBrainzFallback(
-        c.recording.artist,
-        c.recording.title,
-        prefix
-      );
-      if (fb) {
-        fb.recording.duration = fp.duration;
-        out.push(clean(fb));
-        continue;
+    const artistNorm = normalizeStr(c.recording.artist);
+    const titleNorm  = normalizeStr(c.recording.title);
+    const candNorm   = artistNorm + titleNorm;
+
+    // only accept if filename contains artist+title, or score is extremely high
+    if (c.score >= 95 || baseNorm.includes(candNorm)) {
+      if (isCompilation(c.recording.album)) {
+        logger.warn(`[fallback] Compilation detected (“${c.recording.album}”), text‐search…`);
+        const fb = await queryMusicBrainzFallback(
+          c.recording.artist,
+          c.recording.title,
+          prefix
+        );
+        if (fb) {
+          fb.recording.duration = fp.duration;
+          out.push(clean(fb));
+          continue;
+        }
       }
+      out.push(clean(c));
+    } else {
+      logger.warn(
+        `[filename mismatch] skipping ACRCloud candidate “${c.recording.artist} – ${c.recording.title}”`
+      );
     }
-    out.push(clean(c));
   }
 
-  // 2) AcoustID→MusicBrainz fallback
+  // 2) AcoustID→MusicBrainz fallback (always append)
   const alt = await queryMusicBrainzByFingerprint(fp, prefix);
   if (alt) {
     alt.recording.duration = fp.duration;
@@ -177,15 +201,13 @@ async function getFingerprintCandidates(filePath) {
   return out;
 }
 
-/**
- * Legacy: return only the top‐scoring candidate
- */
+/** Legacy: only return the top candidate */
 async function getBestFingerprintMatch(filePath) {
   const cands = await getFingerprintCandidates(filePath);
   return cands[0] || null;
 }
 
-/** Normalize recording text */
+/** Normalize recording text fields */
 function clean(match) {
   const r = match.recording;
   r.title = normalizeTitle(r.title);
@@ -197,4 +219,3 @@ module.exports = {
   getFingerprintCandidates,
   getBestFingerprintMatch
 };
-
