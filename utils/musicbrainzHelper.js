@@ -6,13 +6,14 @@ const USER_AGENT = "MetaTune/1.0 (+https://noctark.ai)";
 const YEAR_REGEX = /^\d{4}$/;
 
 /**
- * Strip out parentheses, brackets, ®™, etc. to avoid 400s
- * and collapse extra whitespace.
+ * Strip out parentheses content, brackets, punctuation, and collapse whitespace.
  */
 function sanitizeForQuery(str = "") {
   return str
-    .replace(/[\[\]\(\)®™]/g, "")   // remove brackets, parens, special symbols
-    .replace(/\s{2,}/g, " ")        // collapse multiple spaces
+    .replace(/\([^)]*\)/g, "")        // remove parentheses and their content
+    .replace(/[\[\]"'®™]/g, "")      // remove brackets and quotes
+    .replace(/[:;—–-]/g, " ")           // convert colons, semicolons, dashes to space
+    .replace(/\s{2,}/g, " ")           // collapse multiple spaces
     .trim();
 }
 
@@ -86,10 +87,9 @@ async function searchRecording(artist, title, year = "") {
 function findBestRelease(recording, year = "") {
   const rels = recording.releases || [];
 
-  const isAlbum = r =>
-    r["release-group"]?.["primary-type"] === "Album";
+  const isAlbum = r => r["release-group"]?.["primary-type"] === "Album";
 
-  // Exclude releases whose title or release-group secondary-types mark them as compilations
+  // Exclude compilation by title or release-group secondary-types
   const notCompilation = r => {
     const titleBad = /(hits|best|collection|playlist|various|compilation|nrj)/i.test(r.title);
     const secTypes = r["release-group"]?.["secondary-types"] || [];
@@ -112,10 +112,7 @@ function findBestRelease(recording, year = "") {
   if (candidates.length) return candidates[0];
 
   // 2) any official album
-  candidates = rels.filter(r =>
-    r.status === "Official" &&
-    isAlbum(r)
-  );
+  candidates = rels.filter(r => r.status === "Official" && isAlbum(r));
   if (candidates.length) return candidates[0];
 
   // 3) any album
