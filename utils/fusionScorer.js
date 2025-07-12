@@ -1,5 +1,4 @@
 // utils/fusionScorer.js
-
 const path = require("path");
 
 /** Strip to lowercase alphanumeric */
@@ -10,7 +9,7 @@ function normalize(str = "") {
     .trim();
 }
 
-/** Split filename into {artist, title, raw} */
+/** Split filename into { artist, title, raw } */
 function extractNamePartsFromFilename(filePath) {
   const base  = path.basename(filePath, path.extname(filePath));
   const clean = base.replace(/\s+/g, " ").trim();
@@ -66,18 +65,17 @@ function computeDurationScore(mDur = 0, oDur = 0) {
 function scoreFusionMatch(filePath, match = {}, embeddedTags = {}) {
   const fn = extractNamePartsFromFilename(filePath);
 
-  // normalize matched vs. original
   const m = {
     title:    normalize(match.title),
     artist:   normalize(match.artist),
     year:     match.year || "",
     duration: match.duration || 0,
-    score:    (match.score || 0) / 100    // 0–1
+    score:    (match.score || 0) / 100    // scale fingerprint to 0–1
   };
   const t = {
     title:    normalize(embeddedTags.title),
     artist:   normalize(embeddedTags.artist),
-    year:     embeddedTags.year   || "",
+    year:     embeddedTags.year || "",
     duration: embeddedTags.duration || 0
   };
 
@@ -86,23 +84,23 @@ function scoreFusionMatch(filePath, match = {}, embeddedTags = {}) {
   const filenameArtistScore = fuzzyScore(fn.artist, m.artist);
   const filenameTitleScore  = fuzzyScore(fn.title,  m.title);
   const filenameRawScore    = fuzzyScore(fn.raw,    m.artist + m.title);
-  const tagArtistScore      = exactScore(t.artist, m.artist);
-  const tagTitleScore       = exactScore(t.title,  m.title);
+  const tagArtistScore      = exactScore(t.artist,   m.artist);
+  const tagTitleScore       = exactScore(t.title,    m.title);
   const yearScore           = computeYearScore(m.year,     t.year);
   const durationScore       = computeDurationScore(m.duration, t.duration);
 
-  // weighted sum (must sum to 1)
+  // new weights (fingerprint = 60%, rest share the other 40%)
   const finalScore =
-      0.35 * fingerprintScore +
-      0.15 * filenameRawScore +
-      0.10 * filenameArtistScore +
-      0.10 * filenameTitleScore +
+      0.60 * fingerprintScore +
+      0.10 * filenameRawScore +
+      0.05 * filenameArtistScore +
+      0.05 * filenameTitleScore +
       0.05 * tagArtistScore +
       0.05 * tagTitleScore +
-      0.10 * yearScore +
+      0.05 * yearScore +
       0.10 * durationScore;
 
-  // lowered medium threshold to catch more matches
+  // medium now kicks in at 0.5
   const confidence =
     finalScore >= 0.8 ? "High" :
     finalScore >= 0.5 ? "Medium" :
