@@ -10,7 +10,7 @@ function runCommand(cmd) {
   });
 }
 
-async function extractMetadata(filePath) {
+async function extractOriginalMetadata(filePath) {
   const cmd = `ffprobe -v quiet -print_format json -show_format "${filePath}"`;
   try {
     const rawOutput = await runCommand(cmd);
