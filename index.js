@@ -21,8 +21,7 @@ if (!process.env.ACOUSTID_API_KEY)
 
 // ─── Imports ───────────────────────────────────────────────────────────────
 const { processFile, processBatch } = require("./controllers/tagController");
-const cleanupUploads = require("./utils/cleanupUploads");
-
+const { cleanupUploads } = require("./utils/cleanupUploads");
 // ─── Directories ───────────────────────────────────────────────────────────
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
