@@ -76,10 +76,7 @@ async function queryMusicBrainzByFingerprint(fp, prefix) {
       }
     });
     const results = resp.data.results || [];
-    fs.writeFileSync(
-      path.join("logs", `${prefix}-acoustid.json`),
-      JSON.stringify(results, null, 2)
-    );
+    fs.writeFileSync(path.join("logs", `${prefix}-acoustid.json`), JSON.stringify(results, null, 2));
     if (!results.length || !results[0].recordings?.length) return null;
 
     const top = results[0];
@@ -111,10 +108,7 @@ async function queryMusicBrainzByFingerprint(fp, prefix) {
 async function queryAcrcloudAll(buffer, prefix) {
   try {
     const result = await ACR.identify(buffer);
-    fs.writeFileSync(
-      path.join("logs", `${prefix}-acr.json`),
-      JSON.stringify(result, null, 2)
-    );
+    fs.writeFileSync(path.join("logs", `${prefix}-acr.json`), JSON.stringify(result, null, 2));
     const list = result.metadata?.music || [];
     return list.map(m => ({
       method: "acrcloud",
@@ -138,30 +132,40 @@ async function queryAcrcloudAll(buffer, prefix) {
  * Dejavu spectrogram-based fallback
  */
 async function queryDejavu(filePath) {
-  return new Promise((resolve, reject) => {
-    exec(`dejavu recognize "${filePath}" --format json`, (err, stdout) => {
-      if (err) return reject(err);
-      try {
-        const r = JSON.parse(stdout);
-        if (!r?.song) return resolve(null);
-        const song = r.song;
-        return resolve({
-          method: "dejavu",
-          score: 90,
-          recording: {
-            mbid: song.mbid || null,
-            title: song.title,
-            artist: song.artist,
-            album: song.album,
-            date: song.year,
-            releaseGroupMbid: null,
-            genre: null
-          }
-        });
-      } catch (e) {
-        reject(e);
+  return new Promise((resolve) => {
+    exec(
+      `python3 -m dejavu recognize "${filePath}" --format json`,
+      { maxBuffer: 1024 * 2000 },
+      (err, stdout, stderr) => {
+        if (err) {
+          logger.warn(
+            `[Dejavu] Command failed: python3 -m dejavu recognize "${filePath}" --format json\n${stderr || err.message}`
+          );
+          return resolve(null);
+        }
+        try {
+          const r = JSON.parse(stdout);
+          if (!r?.song) return resolve(null);
+          const song = r.song;
+          return resolve({
+            method: "dejavu",
+            score: 90,
+            recording: {
+              mbid: song.mbid || null,
+              title: song.title,
+              artist: song.artist,
+              album: song.album,
+              date: song.year,
+              releaseGroupMbid: null,
+              genre: null
+            }
+          });
+        } catch (e) {
+          logger.warn(`[Dejavu] Parse error: ${e.message}`);
+          return resolve(null);
+        }
       }
-    });
+    );
   });
 }
 
@@ -184,7 +188,9 @@ async function getFingerprintCandidates(filePath) {
   for (const c of acrs) {
     c.recording.duration = fp.duration;
     if (isCompilation(c.recording.album)) {
-      logger.warn(`[fallback] Compilation detected (“${c.recording.album}”), using MB fallback…`);
+      logger.warn(
+        `[fallback] Compilation detected (“${c.recording.album}”), using MB fallback…`
+      );
       const fb = await queryMusicBrainzFallback(
         c.recording.artist,
         c.recording.title
@@ -207,7 +213,7 @@ async function getFingerprintCandidates(filePath) {
     const dj = await queryDejavu(filePath);
     if (dj) { dj.recording.duration = fp.duration; out.push(clean(dj)); }
   } catch (e) {
-    logger.warn(`[Dejavu] ${e.message}`);
+    logger.warn(`[Dejavu] Unexpected error: ${e.message}`);
   }
 
   // 4) Filename-based text-only fallback
