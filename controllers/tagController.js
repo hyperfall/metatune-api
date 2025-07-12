@@ -6,6 +6,7 @@ const fetch = require("../utils/fetch");
 const logger = require("../utils/logger");
 const { getBestFingerprintMatch } = require("../utils/fingerprint");
 const fetchAlbumArt = require("../utils/fetchAlbumArt");
+const normalizeTitle = require("../utils/normalizeTitle");
 const { cleanupFiles } = require("../utils/cleanupUploads");
 const { logToDB } = require("../utils/db");
 const { zipFiles } = require("../utils/zipFiles");
@@ -24,14 +25,10 @@ function sanitize(input) {
   return input.replace(/[\/:*?"<>|]/g, "_").trim();
 }
 
-function normalizeText(text) {
-  return text
-    .replace(/\(official.*?\)/i, "")
-    .replace(/\s+/g, " ")
-    .split(" ")
-    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join(" ")
-    .trim();
+function getConfidenceLevel(score) {
+  if (score >= 90) return "High";
+  if (score >= 60) return "Medium";
+  return "Low";
 }
 
 async function handleTagging(filePath, attempt = 1) {
@@ -55,9 +52,9 @@ async function handleTagging(filePath, attempt = 1) {
     return { success: false, message: "Fingerprinting failed." };
   }
 
-  if (!match?.recording) {
-    logger.warn(`❌ [MISS] No match found for: ${filePath}`);
-    return { success: false, message: "Track could not be identified." };
+  if (!match?.recording || match.score < 60) {
+    logger.warn(`❌ [MISS] Match rejected (low score or empty): ${filePath}`);
+    return { success: false, message: "Low-confidence or no match found." };
   }
 
   const r = match.recording;
@@ -66,24 +63,21 @@ async function handleTagging(filePath, attempt = 1) {
   const rawArtist = r.artist || "Unknown Artist";
   const rawAlbum = r.album || r.release || "Unknown Album";
 
-  const title = sanitize(normalizeText(rawTitle));
-  const artist = sanitize(normalizeText(rawArtist));
-  const album = sanitize(normalizeText(rawAlbum));
+  const title = sanitize(normalizeTitle(rawTitle));
+  const artist = sanitize(normalizeTitle(rawArtist));
+  const album = sanitize(normalizeTitle(rawAlbum));
   const year = r.date || "2023";
-  const genre = r.genre || ""; // Optional
+  const genre = r.genre || "";
   const score = match.score || 0;
   const source = match.method || "unknown";
+  const confidence = getConfidenceLevel(score);
 
   const taggedName = `${artist} - ${title}${extension}`;
   const outputPath = path.join(dir, taggedName);
 
-  logger.log(`✅ [MATCH] Source: ${source.toUpperCase()}`);
-  logger.log(`🎵 Title: ${title}`);
-  logger.log(`🎤 Artist: ${artist}`);
-  logger.log(`💽 Album: ${album}`);
-  logger.log(`📆 Year: ${year}`);
-  logger.log(`📊 Confidence Score: ${score}`);
-  if (genre) logger.log(`🎼 Genre: ${genre}`);
+  logger.log(`✅ [MATCH] ${title} by ${artist}`);
+  logger.log(`💽 Album: ${album} | 📆 Year: ${year} | 🎼 Genre: ${genre || "N/A"}`);
+  logger.log(`📊 Score: ${score} | 🔎 Source: ${source} | 🔐 Confidence: ${confidence}`);
 
   let args = [
     `-i "${filePath}"`,
@@ -92,44 +86,39 @@ async function handleTagging(filePath, attempt = 1) {
     `-metadata album="${album}"`,
     `-metadata date="${year}"`,
     genre ? `-metadata genre="${sanitize(genre)}"` : "",
+    `-metadata comment="Tagged by MetaTune | Confidence: ${confidence}"`,
     `-c:a libmp3lame`,
     `-b:a 192k`,
     `-y "${outputPath}"`
-  ].filter(Boolean); // Remove empty strings
+  ].filter(Boolean);
 
   if (r.mbid) {
     try {
       const art = await fetchAlbumArt(r.mbid);
-      if (art) {
+      if (art && art.imageBuffer) {
         fs.writeFileSync(coverPath, art.imageBuffer);
         args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
         logger.log(`🖼️ Cover art embedded from MusicBrainz`);
       }
     } catch (e) {
-      logger.warn(`⚠️ Failed to fetch external album art: ${e.message}`);
+      logger.warn(`⚠️ Cover art fetch failed: ${e.message}`);
     }
   }
 
-  const ffmpegCmd = `ffmpeg ${args.join(" ")}`;
   try {
-    await runCommand(ffmpegCmd);
-    logger.log(`✅ [DONE] Tagged file saved as: ${outputPath}`);
+    await runCommand(`ffmpeg ${args.join(" ")}`);
+    logger.log(`✅ [DONE] File saved as: ${outputPath}`);
 
-    const metadata = { title, artist, album, year, genre, source, score };
+    const metadata = { title, artist, album, year, genre, score, source, confidence };
     fs.writeFileSync(debugJSON, JSON.stringify(metadata, null, 2));
     logger.logMatch(metadata);
     logger.updateStats({ source, success: true });
     await logToDB?.(metadata);
 
     cleanupFiles([filePath, coverPath]);
-    return {
-      success: true,
-      message: "File tagged successfully",
-      output: outputPath,
-      metadata
-    };
+    return { success: true, message: "Tagged successfully", output: outputPath, metadata };
   } catch (err) {
-    logger.error(`❌ [ERROR] FFmpeg failed on ${filePath}: ${err}`);
+    logger.error(`❌ [FFmpeg ERROR] ${err}`);
     logger.updateStats({ source, success: false });
     cleanupFiles([filePath, coverPath]);
     return { success: false, message: "Tagging failed." };
@@ -148,14 +137,11 @@ async function processFile(req, res) {
 }
 
 async function processBatch(req, res) {
-  if (!req.files || !req.files.length)
+  if (!req.files?.length)
     return res.status(400).json({ success: false, message: "No files uploaded" });
 
-  const results = await Promise.all(req.files.map(file => handleTagging(file.path)));
-
-  const taggedFiles = results
-    .filter(r => r.success)
-    .map(r => r.output);
+  const results = await Promise.all(req.files.map(f => handleTagging(f.path)));
+  const taggedFiles = results.filter(r => r.success).map(r => r.output);
 
   if (!taggedFiles.length)
     return res.status(500).json({ success: false, message: "No files could be tagged." });
