@@ -11,6 +11,8 @@ const { cleanupFiles } = require("../utils/cleanupUploads");
 const { logToDB } = require("../utils/db");
 const { zipFiles } = require("../utils/zipFiles");
 const { getOfficialAlbumInfo } = require("../utils/musicbrainzHelper");
+const { getCoverArtByMetadata } = require("../utils/fetchAlbumArtByMetadata");
+const normalizeTitle = require("../utils/normalizeTitle");
 
 function runCommand(command) {
   return new Promise((resolve, reject) => {
@@ -61,12 +63,14 @@ async function handleTagging(filePath, attempt = 1) {
     return { success: false, message: "No confident match found." };
 
   const r = match.recording;
-  const title = sanitize(r.title || base);
-  const artist = sanitize(r.artist || "Unknown Artist");
+  const rawTitle = r.title || base;
+  const rawArtist = r.artist || "Unknown Artist";
 
-  // 🔍 Fetch correct album + art using official lookup
+  const title = sanitize(normalizeTitle(rawTitle));
+  const artist = sanitize(normalizeTitle(rawArtist));
+
   const albumData = await getOfficialAlbumInfo(artist, title);
-  const album = sanitize(albumData?.album || r.album || "Unknown Album");
+  const album = sanitize(normalizeTitle(albumData?.album || r.album || "Unknown Album"));
   const year = albumData?.year || r.date || "2023";
   const coverUrl = albumData?.coverUrl;
 
@@ -77,7 +81,6 @@ async function handleTagging(filePath, attempt = 1) {
 
   const finalMetadata = { title, artist, album, year, genre, score, source, confidence };
 
-  // 🧠 Compare original metadata vs fingerprinted
   const original = await extractOriginalMetadata(filePath);
   const fusionScore = scoreFusionMatch(original, finalMetadata);
 
@@ -107,15 +110,35 @@ async function handleTagging(filePath, attempt = 1) {
     `-y "${output}"`
   ].filter(Boolean);
 
+  let embeddedCover = false;
+
   if (coverUrl) {
     try {
       const res = await fetch(coverUrl);
       const buf = await res.arrayBuffer();
       fs.writeFileSync(coverPath, Buffer.from(buf));
       args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
-      logger.log(`🖼️ Cover art embedded`);
+      embeddedCover = true;
+      logger.log(`🖼️ Cover art embedded from MusicBrainz`);
     } catch (err) {
       logger.warn(`⚠️ Cover art failed: ${err.message}`);
+    }
+  }
+
+  if (!embeddedCover) {
+    try {
+      const fallbackArt = await getCoverArtByMetadata(artist, title, album);
+      if (fallbackArt) {
+        const res = await fetch(fallbackArt);
+        const buf = await res.arrayBuffer();
+        fs.writeFileSync(coverPath, Buffer.from(buf));
+        args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
+        logger.log(`🖼️ Cover art embedded via metadata fallback`);
+      } else {
+        logger.warn(`⚠️ No fallback cover art available`);
+      }
+    } catch (err) {
+      logger.warn(`⚠️ Metadata fallback cover failed: ${err.message}`);
     }
   }
 
