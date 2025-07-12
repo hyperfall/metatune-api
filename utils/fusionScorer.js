@@ -23,7 +23,7 @@ function computeTextMatchScore(a, b) {
  * - Match vs embedded tags (optional)
  * - Match confidence from fingerprint
  */
-function fusionScore({
+function scoreFusionMatch({
   filePath,
   match,           // { title, artist, album, score }
   embeddedTags = {} // { title, artist }
@@ -64,4 +64,4 @@ function fusionScore({
   };
 }
 
-module.exports = { fusionScore };
+module.exports = { scoreFusionMatch };
