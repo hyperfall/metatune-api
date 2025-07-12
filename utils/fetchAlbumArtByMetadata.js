@@ -1,5 +1,5 @@
 // utils/fetchAlbumArtByMetadata.js
-const fetch = require("node-fetch");
+const fetch = require("./fetch");
 
 async function fetchAlbumArtByMetadata(artist, title, album) {
   const query = `${artist} ${album}`.replace(/\s+/g, "+").toLowerCase();
