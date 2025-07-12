@@ -36,4 +36,4 @@ async function extractMetadata(filePath) {
   }
 }
 
-module.exports = { extractMetadata };
+module.exports = { extractOriginalMetadata };
