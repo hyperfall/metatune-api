@@ -12,7 +12,7 @@ const YEAR_REGEX = /^\d{4}$/;
 function sanitizeForQuery(str = "") {
   return str
     .replace(/[\[\]\(\)®™]/g, "")   // remove brackets, parens, special symbols
-    .replace(/\s{2,}/g, " ")           // collapse multiple spaces
+    .replace(/\s{2,}/g, " ")        // collapse multiple spaces
     .trim();
 }
 
@@ -50,12 +50,12 @@ async function fetchRecordingByMBID(mbid) {
 
 /**
  * Search MusicBrainz recordings via artist + title + optional year hint.
+ * First tries with the year filter, then without if no results.
  */
 async function searchRecording(artist, title, year = "") {
   const safeArtist = sanitizeForQuery(artist);
   const safeTitle  = sanitizeForQuery(title);
 
-  // build the two possible queries
   const baseQuery = `artist:"${safeArtist}" AND recording:"${safeTitle}"`;
   const yearQuery = year && YEAR_REGEX.test(year)
     ? `${baseQuery} AND date:${year}`
@@ -66,7 +66,7 @@ async function searchRecording(artist, title, year = "") {
   let data = await safeFetchJSON(url).catch(() => null);
   let recs = data?.recordings || [];
 
-  // 2) If nothing found *and* we did include a year, retry without it
+  // 2) Retry without year if nothing found
   if (recs.length === 0 && year) {
     url = `https://musicbrainz.org/ws/2/recording?query=${encodeURIComponent(baseQuery)}&fmt=json&limit=20`;
     data = await safeFetchJSON(url).catch(() => null);
@@ -76,29 +76,26 @@ async function searchRecording(artist, title, year = "") {
   return recs;
 }
 
-
-  const query = parts.join(" AND ");
-  const url = `https://musicbrainz.org/ws/2/recording?query=${encodeURIComponent(query)}&fmt=json&limit=20`;
-  try {
-    const data = await safeFetchJSON(url);
-    return data.recordings || [];
-  } catch (err) {
-    console.warn(`[Search] ${err.message}`);
-    return [];
-  }
-}
-
 /**
  * From a recording, pick the most appropriate release:
- * 1) Official album (non-compilation), year-matched if possible
+ * 1) Official album (non-Compilation), year-matched if possible
  * 2) Any official album
  * 3) Any album
  * 4) First release
  */
 function findBestRelease(recording, year = "") {
   const rels = recording.releases || [];
-  const isAlbum = r => r["release-group"]?.["primary-type"] === "Album";
-  const notCompilation = r => !/(hits|best|collection|playlist|various|compilation|nrj)/i.test(r.title);
+
+  const isAlbum = r =>
+    r["release-group"]?.["primary-type"] === "Album";
+
+  // Exclude releases whose title or release-group secondary-types mark them as compilations
+  const notCompilation = r => {
+    const titleBad = /(hits|best|collection|playlist|various|compilation|nrj)/i.test(r.title);
+    const secTypes = r["release-group"]?.["secondary-types"] || [];
+    const groupBad = secTypes.includes("Compilation");
+    return !titleBad && !groupBad;
+  };
 
   // 1) official, album-type, non-compilation
   let candidates = rels.filter(r =>
@@ -115,7 +112,10 @@ function findBestRelease(recording, year = "") {
   if (candidates.length) return candidates[0];
 
   // 2) any official album
-  candidates = rels.filter(r => r.status === "Official" && isAlbum(r));
+  candidates = rels.filter(r =>
+    r.status === "Official" &&
+    isAlbum(r)
+  );
   if (candidates.length) return candidates[0];
 
   // 3) any album
