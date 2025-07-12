@@ -5,6 +5,7 @@ FROM node:18-slim
 # Install system dependencies:
 #  - ffmpeg & Chromaprint for audio fingerprinting
 #  - Python3, venv, dev headers, and build tools for Dejavu and psycopg2
+#  - PortAudio dev packages so PyAudio will compile
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libchromaprint-tools \
@@ -15,6 +16,8 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     default-libmysqlclient-dev \
     libpq-dev \
+    libportaudio2 \
+    portaudio19-dev \
   && rm -rf /var/lib/apt/lists/*
 
 # Verify fpcalc is installed
