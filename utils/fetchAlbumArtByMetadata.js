@@ -1,29 +1,41 @@
 // utils/fetchAlbumArtByMetadata.js
 const fetch = require("./fetch");
 
-async function getCoverArtByMetadata(artist, title, album) {
-  const query = `${artist} ${album}`.replace(/\s+/g, "+").toLowerCase();
-  const searchUrl = `https://musicbrainz.org/ws/2/release/?query=artist:${artist} AND release:${album}&fmt=json&limit=5`;
+function sanitizeForQuery(str) {
+  return encodeURIComponent(str?.replace(/[^\w\s]/gi, "").trim());
+}
+
+async function getCoverArtByMetadata(artist = "", title = "", album = "") {
+  if (!artist || !album) return null;
+
+  const query = `artist:${sanitizeForQuery(artist)} AND release:${sanitizeForQuery(album)}`;
+  const searchUrl = `https://musicbrainz.org/ws/2/release/?query=${query}&fmt=json&limit=5`;
 
   try {
     const res = await fetch(searchUrl, {
-      headers: { 'User-Agent': 'MetaTune/1.0 (metatune.app)' }
+      headers: { "User-Agent": "MetaTune/1.0 (https://metatune.app)" }
     });
+
     const data = await res.json();
-    const bestRelease = data.releases?.find(r => r['release-group']) || data.releases?.[0];
+    const releases = data?.releases || [];
 
-    if (!bestRelease) return null;
+    if (!releases.length) return null;
 
+    // Prefer non-compilations and releases with cover art info
+    const bestRelease = releases.find(r => r["release-group"]) || releases[0];
     const releaseId = bestRelease.id;
-    const coverUrl = `https://coverartarchive.org/release/${releaseId}/front`; // fallback: /release-group/:id/front
+    const releaseGroupId = bestRelease["release-group"]?.id;
+
+    // Try release cover first, then fallback to release-group
+    const coverUrl = `https://coverartarchive.org/release/${releaseId}/front`;
 
     return {
       coverUrl,
-      release: bestRelease.title,
+      release: bestRelease.title || album,
       year: bestRelease.date?.slice(0, 4) || "",
     };
   } catch (err) {
-    console.warn("Cover fetch failed:", err);
+    console.warn(`[CoverFetch] Failed for ${artist} - ${album}:`, err.message);
     return null;
   }
 }
