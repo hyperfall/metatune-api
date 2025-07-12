@@ -1,51 +1,24 @@
 // utils/fetchAlbumArt.js
 const axios = require("axios");
 
-async function fetchAlbumArt(mbid) {
-  const endpoints = [
-    `https://coverartarchive.org/release-group/${mbid}`,
-    `https://coverartarchive.org/release/${mbid}`
-  ];
+async function fetchAlbumArtFromUrl(url) {
+  try {
+    const res = await axios.get(url, { responseType: "arraybuffer", timeout: 8000 });
 
-  for (const url of endpoints) {
-    try {
-      const resp = await axios.get(url, { timeout: 8000 });
-
-      // 1. release-group format
-      if (resp.data.images) {
-        const front = resp.data.images.find(img => img.front && img.image);
-        if (!front) throw new Error("No usable front cover found");
-
-        const imgBuf = await axios.get(front.image, { responseType: "arraybuffer" });
-        return {
-          mime: "image/jpeg",
-          type: { id: 3, name: "front cover" },
-          description: "Album Art",
-          imageBuffer: Buffer.from(imgBuf.data),
-          url: front.image
-        };
-      }
-
-      // 2. fallback: direct image
-      if (resp.headers["content-type"]?.startsWith("image/")) {
-        return {
-          mime: resp.headers["content-type"],
-          type: { id: 3, name: "front cover" },
-          description: "Album Art",
-          imageBuffer: Buffer.from(resp.data),
-          url: url
-        };
-      }
-
-    } catch (err) {
-      const reason = err.response?.status
-        ? `HTTP ${err.response.status}`
-        : err.message;
-      console.warn(`⚠️ CoverArt fetch failed at ${url}: ${reason}`);
-    }
+    return {
+      mime: res.headers["content-type"] || "image/jpeg",
+      imageBuffer: Buffer.from(res.data),
+      type: { id: 3, name: "front cover" },
+      description: "Album Art",
+      url
+    };
+  } catch (err) {
+    const reason = err.response?.status
+      ? `HTTP ${err.response.status}`
+      : err.message;
+    console.warn(`⚠️ Failed to fetch album art from ${url}: ${reason}`);
+    return null;
   }
-
-  return null;
 }
 
-module.exports = fetchAlbumArt;
+module.exports = fetchAlbumArtFromUrl;
