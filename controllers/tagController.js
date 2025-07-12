@@ -1,53 +1,53 @@
 const fs = require("fs");
 const path = require("path");
 const { exec } = require("child_process");
-const { promisify } = require("util");
 
 const { getBestFingerprintMatch } = require("../utils/fingerprint");
+const fetch = require("../utils/fetch");
 const fetchAlbumArt = require("../utils/fetchAlbumArt");
 const logger = require("../utils/logger");
+const { logMetadata } = require("../utils/db");
+const { zipFiles } = require("../utils/zipFiles");
+const { cleanupFiles } = require("../utils/cleanupUploads");
 
-const runCommand = promisify(exec);
+function runCommand(cmd) {
+  return new Promise((resolve, reject) => {
+    exec(cmd, { maxBuffer: 1024 * 1000 }, (err, stdout, stderr) => {
+      if (err) return reject(stderr || stdout);
+      resolve(stdout.trim());
+    });
+  });
+}
 
-function sanitize(input) {
-  return input ? input.replace(/[\/:*?"<>|]/g, "_").trim() : "Unknown";
+function sanitize(str) {
+  return str ? str.replace(/[\/:*?"<>|]/g, "_").trim() : "Unknown";
 }
 
 async function handleTagging(filePath) {
-  const extension = path.extname(filePath) || ".mp3";
-  const baseName = path.basename(filePath, extension);
+  const ext = path.extname(filePath) || ".mp3";
+  const base = path.basename(filePath, ext);
   const dir = path.dirname(filePath);
-  const metaPath = path.join("cache", `${baseName}.json`);
-  const coverPath = path.join(dir, "cover.jpg");
+  const coverPath = path.join(dir, `${base}_cover.jpg`);
+  const metaPath = path.join("cache", `${base}.json`);
 
   logger.log(`🔍 [START] Processing file: ${filePath}`);
 
-  // 🔁 Retry ACRCloud once if it fails
-  let match = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    match = await getBestFingerprintMatch(filePath);
-    if (match && match.recording) break;
-    if (attempt === 1) {
-      logger.warn("🔁 Retrying fingerprint match...");
-      await new Promise(r => setTimeout(r, 1000));
-    }
-  }
-
+  // Fingerprint (retry fallback built-in)
+  const match = await getBestFingerprintMatch(filePath);
   if (!match || !match.recording) {
     logger.warn(`❌ [MISS] No match found for: ${filePath}`);
-    fs.unlinkSync(filePath); // cleanup original
+    cleanupFiles([filePath]);
     return { success: false, message: "Track could not be identified." };
   }
 
   const r = match.recording;
-  const title = sanitize(r.title || baseName);
+  const title = sanitize(r.title || base);
   const artist = sanitize(r.artist || "Unknown Artist");
   const album = sanitize(r.album || "Unknown Album");
   const year = r.date || "2023";
   const score = match.score || 0;
 
-  const taggedName = `${artist} - ${title}${extension}`;
-  const outputPath = path.join(dir, taggedName);
+  const outputPath = path.join(dir, `${artist} - ${title}${ext}`);
 
   logger.log(`✅ [MATCH] Source: ${match.method.toUpperCase()}`);
   logger.log(`🎵 Title: ${title}`);
@@ -65,59 +65,69 @@ async function handleTagging(filePath) {
     `-metadata date="${year}"`,
     `-c:a libmp3lame`,
     `-b:a 192k`,
-    `-y "${outputPath}"`
   ];
 
-  // 🖼️ Try to embed album art
-  if (r.id) {
-    try {
-      const art = await fetchAlbumArt(r.id);
-      if (art && art.imageBuffer) {
+  let usedCover = false;
+
+  try {
+    if (r.mbid) {
+      const art = await fetchAlbumArt(r.mbid);
+      if (art?.imageBuffer) {
         fs.writeFileSync(coverPath, art.imageBuffer);
-        args.splice(1, 0, `-i "${coverPath}" -map 0 -map 1 -c copy -disposition:v:1 attached_pic`);
-        logger.log(`🖼️ Album art embedded from: ${art.url}`);
+        args.unshift(`-i "${coverPath}"`);
+        args.push(`-map 0 -map 1 -disposition:v:1 attached_pic`);
+        usedCover = true;
+        logger.log(`🖼️ Cover art embedded from MusicBrainz`);
       }
+    }
+  } catch (e) {
+    logger.warn(`⚠️ Failed to fetch cover art from MusicBrainz`);
+  }
+
+  // Fallback: use embedded image from source
+  if (!usedCover && r.coverArt) {
+    try {
+      const res = await fetch(r.coverArt);
+      const buf = await res.arrayBuffer();
+      fs.writeFileSync(coverPath, Buffer.from(buf));
+      args.unshift(`-i "${coverPath}"`);
+      args.push(`-map 0 -map 1 -disposition:v:1 attached_pic`);
+      logger.log(`🖼️ Fallback cover used from ACRCloud`);
     } catch (e) {
-      logger.warn(`⚠️ Failed to fetch or embed album art: ${e.message}`);
+      logger.warn(`⚠️ Could not fetch fallback cover art: ${e.message}`);
     }
   }
 
+  args.push(`-y "${outputPath}"`);
+
+  const ffmpegCmd = `ffmpeg ${args.join(" ")}`;
   try {
-    await runCommand(`ffmpeg ${args.join(" ")}`);
+    await runCommand(ffmpegCmd);
     logger.log(`✅ [DONE] Tagged file saved as: ${outputPath}`);
 
-    fs.writeFileSync(metaPath, JSON.stringify({
-      title, artist, album, year, source: match.method, score
-    }, null, 2));
+    const metadata = { title, artist, album, year, source: match.method, score };
+    fs.writeFileSync(metaPath, JSON.stringify(metadata, null, 2));
+    logMetadata(metadata);
+    cleanupFiles([filePath, coverPath]);
 
     return {
       success: true,
       message: "File tagged successfully",
       output: outputPath,
-      metadata: { title, artist, album, year, source: match.method, score }
+      metadata
     };
   } catch (err) {
     logger.error(`❌ [ERROR] FFmpeg failed on ${filePath}: ${err}`);
+    cleanupFiles([filePath, coverPath]);
     return { success: false, message: "Tagging failed." };
-  } finally {
-    try {
-      fs.unlinkSync(filePath);
-      if (fs.existsSync(coverPath)) fs.unlinkSync(coverPath);
-    } catch (e) {
-      logger.warn(`⚠️ Cleanup error: ${e.message}`);
-    }
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function processFile(req, res) {
-  if (!req.file)
-    return res.status(400).json({ success: false, message: "No file uploaded" });
+  if (!req.file) return res.status(400).json({ success: false, message: "No file uploaded" });
 
   const result = await handleTagging(req.file.path);
-  if (!result.success)
-    return res.status(500).json(result);
+  if (!result.success) return res.status(500).json(result);
 
   res.download(result.output, path.basename(result.output));
 }
@@ -126,18 +136,13 @@ async function processBatch(req, res) {
   if (!req.files || !req.files.length)
     return res.status(400).json({ success: false, message: "No files uploaded" });
 
-  const results = await Promise.all(req.files.map(file => handleTagging(file.path)));
+  const results = await Promise.all(req.files.map(f => handleTagging(f.path)));
+  const successful = results.filter(r => r.success).map(r => r.output);
 
-  const taggedFiles = results
-    .filter(r => r.success)
-    .map(r => r.output);
-
-  if (!taggedFiles.length)
+  if (!successful.length)
     return res.status(500).json({ success: false, message: "No files could be tagged." });
 
-  const { zipFiles } = require("../utils/zipFiles");
-  const zipPath = await zipFiles(taggedFiles);
-
+  const zipPath = await zipFiles(successful);
   res.download(zipPath, path.basename(zipPath));
 }
 
