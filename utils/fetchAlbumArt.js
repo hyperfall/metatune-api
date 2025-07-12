@@ -9,32 +9,39 @@ async function fetchAlbumArt(mbid) {
 
   for (const url of endpoints) {
     try {
-      const resp = await axios.get(url);
-      // release-group format
+      const resp = await axios.get(url, { timeout: 8000 });
+
+      // 1. release-group format
       if (resp.data.images) {
-        const front = resp.data.images.find(img => img.front);
-        if (!front) throw new Error("No front cover at " + url);
+        const front = resp.data.images.find(img => img.front && img.image);
+        if (!front) throw new Error("No usable front cover found");
+
         const imgBuf = await axios.get(front.image, { responseType: "arraybuffer" });
         return {
           mime: "image/jpeg",
           type: { id: 3, name: "front cover" },
           description: "Album Art",
           imageBuffer: Buffer.from(imgBuf.data),
+          url: front.image
         };
       }
-      // release format (rare): image URL at resp.data.image?
-      // some release endpoints redirect directly to the image
+
+      // 2. fallback: direct image
       if (resp.headers["content-type"]?.startsWith("image/")) {
         return {
           mime: resp.headers["content-type"],
           type: { id: 3, name: "front cover" },
           description: "Album Art",
           imageBuffer: Buffer.from(resp.data),
+          url: url
         };
       }
+
     } catch (err) {
-      // try next endpoint
-      console.warn(`CoverArt fetch failed at ${url}:`, err.message);
+      const reason = err.response?.status
+        ? `HTTP ${err.response.status}`
+        : err.message;
+      console.warn(`⚠️ CoverArt fetch failed at ${url}: ${reason}`);
     }
   }
 
