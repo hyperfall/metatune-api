@@ -147,7 +147,7 @@ async function queryAcrcloudAll(buffer, prefix) {
 async function queryDejavu(filePath) {
   return new Promise(resolve => {
     exec(
-      `python3 dejavu.py recognize "${filePath}" --format json`
+      `python3 dejavu.py recognize "${filePath}" --format json"
       { maxBuffer: 1024 * 2000 },
       (err, stdout, stderr) => {
         if (err) {
