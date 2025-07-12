@@ -3,6 +3,9 @@
 const fs = require("fs");
 const path = require("path");
 
+const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5 MB
+const DEBUG = process.env.DEBUG_LOGGING === "true";
+
 const logDir = path.join(__dirname, "..", "cache");
 if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
 
@@ -10,8 +13,25 @@ const logFile = path.join(logDir, "fingerprintLog.json");
 const errorFile = path.join(logDir, "errors.log");
 const statsFile = path.join(logDir, "fingerprintStats.json");
 
-// Log a match result to fingerprintLog.json
+function rotateIfTooLarge(filePath) {
+  try {
+    if (fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath);
+      if (stat.size > MAX_LOG_SIZE) {
+        const backupName = `${filePath}.${Date.now()}.bak`;
+        fs.renameSync(filePath, backupName);
+        fs.writeFileSync(filePath, "[]"); // new blank log for .json
+      }
+    }
+  } catch (e) {
+    console.warn(`⚠️ Log rotation failed: ${e.message}`);
+  }
+}
+
 function logMatch(data) {
+  if (!DEBUG) return;
+
+  rotateIfTooLarge(logFile);
   const entry = {
     timestamp: new Date().toISOString(),
     ...data,
@@ -22,22 +42,25 @@ function logMatch(data) {
     if (fs.existsSync(logFile)) {
       logs = JSON.parse(fs.readFileSync(logFile, "utf-8")) || [];
     }
-  } catch (e) {
-    logs = [];
-  }
+  } catch (e) {}
 
   logs.push(entry);
   fs.writeFileSync(logFile, JSON.stringify(logs, null, 2));
 }
 
-// Append error to errors.log
 function logError(error) {
+  if (!DEBUG) return;
+
+  rotateIfTooLarge(errorFile);
   const entry = `[${new Date().toISOString()}] ${error}\n`;
   fs.appendFileSync(errorFile, entry);
 }
 
-// Update fingerprintStats.json for global metrics
 function updateStats({ source, success }) {
+  if (!DEBUG) return;
+
+  rotateIfTooLarge(statsFile);
+
   let stats = {
     total: 0,
     matched: 0,
