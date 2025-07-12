@@ -22,7 +22,8 @@ async function extractOriginalMetadata(filePath) {
       artist: tags.artist || "",
       album: tags.album || "",
       year: tags.date || tags.year || "",
-      genre: tags.genre || ""
+      genre: tags.genre || "",
+      filePath // ✅ Include filePath for fusion scoring
     };
   } catch (err) {
     console.warn(`[metadataExtractor] Failed to read metadata from ${filePath}: ${err}`);
@@ -31,7 +32,8 @@ async function extractOriginalMetadata(filePath) {
       artist: "",
       album: "",
       year: "",
-      genre: ""
+      genre: "",
+      filePath // ✅ Still include it even on failure
     };
   }
 }
