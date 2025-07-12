@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { getBestFingerprintMatch } = require("../utils/fingerprint");
+const fetch = require('../utils/fetch'); // dynamically loads node-fetch@3+
 const { exec } = require("child_process");
 const fetch = require("node-fetch"); // Only for Node <18
 
