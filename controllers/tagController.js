@@ -8,7 +8,7 @@ const { getBestFingerprintMatch } = require("../utils/fingerprint");
 const normalizeTitle = require("../utils/normalizeTitle");
 const { cleanupFiles } = require("../utils/cleanupUploads");
 const { logToDB } = require("../utils/db");
-const { zipFiles } = require("../utils/zipFiles"); // ✅ Correct
+const { zipFiles } = require("../utils/zipFiles");
 const { getOfficialAlbumInfo } = require("../utils/musicbrainzHelper");
 
 function runCommand(command) {
@@ -29,6 +29,14 @@ function getConfidenceLevel(score) {
   if (score >= 90) return "High";
   if (score >= 60) return "Medium";
   return "Low";
+}
+
+// 🚨 Cross-check match vs filename
+function isConfidentMatch(filename, title, artist) {
+  const safe = str =>
+    str.toLowerCase().replace(/[^a-z0-9]/gi, "").slice(0, 40);
+  const f = safe(filename);
+  return f.includes(safe(title)) && f.includes(safe(artist));
 }
 
 async function handleTagging(filePath, attempt = 1) {
@@ -66,6 +74,12 @@ async function handleTagging(filePath, attempt = 1) {
   const r = match.recording;
   const title = sanitize(normalizeTitle(r.title || baseName));
   const artist = sanitize(normalizeTitle(r.artist || "Unknown Artist"));
+
+  // 🧠 Validate that match aligns with filename
+  if (!isConfidentMatch(baseName, title, artist)) {
+    logger.warn(`❌ [MISMATCH] Fingerprint match (${artist} - ${title}) does not match original filename: ${baseName}`);
+    return { success: false, message: "Match rejected due to filename mismatch." };
+  }
 
   // 🔍 Fallback to MusicBrainz for album correction
   const fallback = await getOfficialAlbumInfo(artist, title);
@@ -166,7 +180,7 @@ async function processBatch(req, res) {
   if (!taggedFiles.length)
     return res.status(500).json({ success: false, message: "No files could be tagged." });
 
-  const zipPath = await zipFiles(taggedFiles); // ✅ Matches the import
+  const zipPath = await zipFiles(taggedFiles);
   res.download(zipPath, path.basename(zipPath));
 }
 
