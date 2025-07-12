@@ -147,4 +147,131 @@ async function queryAcrcloudAll(buffer, prefix) {
 async function queryDejavu(filePath) {
   return new Promise(resolve => {
     exec(
-      `python3 -
+      `python3 -m dejavu recognize "${filePath}" --format json`,
+      { maxBuffer: 1024 * 2000 },
+      (err, stdout, stderr) => {
+        if (err) {
+          logger.warn(
+            `[Dejavu] Command failed: python3 -m dejavu recognize "${filePath}" --format json\n${stderr || err.message}`
+          );
+          return resolve(null);
+        }
+        try {
+          const r = JSON.parse(stdout);
+          if (!r?.song) return resolve(null);
+          const song = r.song;
+          return resolve({
+            method: "dejavu",
+            score: 90,
+            recording: {
+              mbid: song.mbid || null,
+              title: song.title,
+              artist: song.artist,
+              album: song.album,
+              date: song.year,
+              releaseGroupMbid: null,
+              genre: null
+            }
+          });
+        } catch (e) {
+          logger.warn(`[Dejavu] Parse error: ${e.message}`);
+          return resolve(null);
+        }
+      }
+    );
+  });
+}
+
+/**
+ * Returns ordered fingerprint candidates:
+ * 1) ACRCloud hits (with compilation→fallback)
+ * 2) AcoustID→MusicBrainz lookup
+ * 3) Dejavu
+ * 4) Pure text-only MusicBrainz lookup based on filename (Artist - Title)
+ */
+async function getFingerprintCandidates(filePath) {
+  const fp = await runFpcalc(filePath);
+  const buffer = fs.readFileSync(filePath);
+  const prefix = path.basename(filePath, path.extname(filePath));
+
+  // 1) ACRCloud
+  const acrs = await queryAcrcloudAll(buffer, prefix);
+  acrs.sort((a, b) => (b.score || 0) - (a.score || 0));
+  const out = [];
+  for (const c of acrs) {
+    c.recording.duration = fp.duration;
+    if (isCompilation(c.recording.album)) {
+      logger.warn(
+        `[fallback] Compilation detected (“${c.recording.album}”), using MB fallback…`
+      );
+      const fb = await queryMusicBrainzFallback(
+        c.recording.artist,
+        c.recording.title
+      );
+      if (fb) {
+        fb.recording.duration = fp.duration;
+        out.push(clean(fb));
+        continue;
+      }
+    }
+    out.push(clean(c));
+  }
+
+  // 2) AcoustID→MusicBrainz
+  const alt = await queryMusicBrainzByFingerprint(fp, prefix);
+  if (alt) {
+    alt.recording.duration = fp.duration;
+    out.push(clean(alt));
+  }
+
+  // 3) Dejavu
+  try {
+    const dj = await queryDejavu(filePath);
+    if (dj) {
+      dj.recording.duration = fp.duration;
+      out.push(clean(dj));
+    }
+  } catch (e) {
+    logger.warn(`[Dejavu] Unexpected error: ${e.message}`);
+  }
+
+  // 4) Filename-based text-only fallback
+  const parts = prefix.split(" - ");
+  if (parts.length >= 2) {
+    const [fileArtist, fileTitle] = parts;
+    try {
+      const info = await getOfficialAlbumInfo(
+        fileArtist.trim(),
+        fileTitle.trim()
+      );
+      if (info) {
+        const fb = { method: "text-only", score: 0, recording: info };
+        fb.recording.duration = fp.duration;
+        out.push(clean(fb));
+      }
+    } catch (err) {
+      logger.error(`[TextFallback] ${err.message}`);
+    }
+  }
+
+  return out;
+}
+
+/** Legacy: return only the top-scoring candidate */
+async function getBestFingerprintMatch(filePath) {
+  const cands = await getFingerprintCandidates(filePath);
+  return cands[0] || null;
+}
+
+/** Normalize recording text fields */
+function clean(match) {
+  const r = match.recording;
+  r.title = normalizeTitle(r.title);
+  r.album = normalizeTitle(r.album);
+  return match;
+}
+
+module.exports = {
+  getFingerprintCandidates,
+  getBestFingerprintMatch
+};
