@@ -52,11 +52,7 @@ const upload = multer({
       "audio/ogg", "audio/webm",
       "audio/aac", "audio/opus", "audio/oga",
     ];
-    if (allowed.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error("Unsupported audio format"), false);
-    }
+    cb(null, allowed.includes(file.mimetype));
   },
 });
 
@@ -72,7 +68,7 @@ app.post("/api/tag/upload", upload.single("audio"), processFile);
 // Batch-file tagging
 app.post("/api/tag/batch", upload.array("audio"), processBatch);
 
-// Fingerprint stats (DEV)
+// View fingerprinting stats
 app.get("/api/stats", (req, res) => {
   const statsPath = path.join(__dirname, "cache", "fingerprintStats.json");
   if (fs.existsSync(statsPath)) {
@@ -83,25 +79,39 @@ app.get("/api/stats", (req, res) => {
   }
 });
 
-// 📂 View logs/debug cache files
-app.get("/logs/:file", (req, res) => {
-  const allowedDirs = ["cache", "logs"];
-  const file = req.params.file;
-  let filePath = null;
+// 📂 View available logs/debug files
+app.get("/logs", (req, res) => {
+  const dirs = ["cache", "logs"];
+  const results = [];
 
-  for (const dir of allowedDirs) {
-    const fullPath = path.join(__dirname, dir, file);
-    if (fs.existsSync(fullPath)) {
-      filePath = fullPath;
-      break;
+  for (const dir of dirs) {
+    const folder = path.join(__dirname, dir);
+    if (fs.existsSync(folder)) {
+      const files = fs.readdirSync(folder).map(name => ({
+        name,
+        path: `/logs/${name}`,
+        dir,
+      }));
+      results.push(...files);
     }
   }
 
-  if (!filePath) {
-    return res.status(404).send("Log file not found.");
+  res.json(results);
+});
+
+// 📄 Serve log file contents
+app.get("/logs/:file", (req, res) => {
+  const allowedDirs = ["cache", "logs"];
+  const { file } = req.params;
+
+  for (const dir of allowedDirs) {
+    const filePath = path.join(__dirname, dir, file);
+    if (fs.existsSync(filePath)) {
+      return res.sendFile(filePath);
+    }
   }
 
-  res.sendFile(filePath);
+  res.status(404).send("Log file not found.");
 });
 
 // ─── Cleanup ────────────────────────────────────────────────────────────────
