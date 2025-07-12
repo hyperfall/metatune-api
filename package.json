@@ -32,7 +32,9 @@
     "tmp": "^0.2.1",
     "archiver": "^7.0.1",
     "node-fetch": "^3.3.2",
-    "acrcloud": "^1.4.0"
+    "acrcloud": "^1.4.0",
+    "sqlite3": "^5.1.7"
+
 
 
 
