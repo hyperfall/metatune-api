@@ -1,36 +1,36 @@
-# dejavu.py
-import argparse
+import os
+import sys
 import json
 from dejavu import Dejavu
 from dejavu.recognize import FileRecognizer
 
-# Load config
+# Build config from environment variables
 config = {
     "database": {
-        "host": "localhost",
-        "user": "root",
-        "passwd": "yourpassword",
-        "db": "dejavu"
-    }
+        "host": os.getenv("DJV_DB_HOST", "localhost"),
+        "user": os.getenv("DJV_DB_USER", "dejavu_user"),
+        "password": os.getenv("DJV_DB_PASS", "supersecret"),
+        "database": os.getenv("DJV_DB_NAME", "dejavu_db"),
+        "port": int(os.getenv("DJV_DB_PORT", "5432")),
+        "type": os.getenv("DJV_DB_TYPE", "postgres")
+    },
+    "fingerprint_limit": int(os.getenv("DJV_FP_LIMIT", "5")),
+    "match_threshold": float(os.getenv("DJV_MATCH_THRESHOLD", "0.2"))
 }
 
-# Parse CLI arguments
-parser = argparse.ArgumentParser(description="Dejavu Recognizer CLI")
-subparsers = parser.add_subparsers(dest="command")
+# Init Dejavu
+djv = Dejavu(config)
 
-recognize_parser = subparsers.add_parser("recognize")
-recognize_parser.add_argument("file", type=str, help="Path to the audio file")
-recognize_parser.add_argument("--format", type=str, default="json", help="Output format")
-
-args = parser.parse_args()
-
-if args.command == "recognize":
-    try:
-        djv = Dejavu(config)
-        result = djv.recognize(FileRecognizer, args.file)
-        if args.format == "json":
-            print(json.dumps(result))
+# CLI usage: python3 -m utils.dejavu recognize <file> --format json
+if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "recognize":
+        file_path = sys.argv[2]
+        recognizer = FileRecognizer(djv)
+        result = recognizer.recognize_file(file_path)
+        
+        if "--format" in sys.argv and "json" in sys.argv:
+            print(json.dumps(result, indent=2))
         else:
             print(result)
-    except Exception as e:
-        print(json.dumps({"error": str(e)}))
+    else:
+        print("Usage: python3 -m utils.dejavu recognize <file> --format json")
