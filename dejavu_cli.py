@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.11
 # dejavu_cli.py
 
 import os
@@ -9,14 +9,18 @@ from dejavu.logic.recognizer.file_recognizer import FileRecognizer
 
 # Build config from ENV (Railway‐style or fallbacks)
 config = {
+    # <-- specify which database backend to use
+    "database_type": os.getenv("DJV_DB_TYPE", os.getenv("PG_DB_TYPE", "postgres")).lower(),
+
+    # <-- pass only the host/user/password/name/port here
     "database": {
         "host":     os.getenv("DJV_DB_HOST",  os.getenv("PGHOST",     "localhost")),
         "user":     os.getenv("DJV_DB_USER",  os.getenv("PGUSER",     "postgres")),
         "password": os.getenv("DJV_DB_PASS",  os.getenv("PGPASSWORD", "")),
         "database": os.getenv("DJV_DB_NAME",  os.getenv("PGDATABASE", "postgres")),
         "port":     int(os.getenv("DJV_DB_PORT", os.getenv("PGPORT",   "5432"))),
-        "type":     os.getenv("DJV_DB_TYPE",  "postgres"),
     },
+
     "fingerprint_limit":  int(os.getenv("DJV_FP_LIMIT",       "5")),
     "match_threshold":    float(os.getenv("DJV_MATCH_THRESHOLD","0.2")),
 }
@@ -37,10 +41,9 @@ def main():
     recognizer = FileRecognizer(djv)
 
     try:
-        # The Rollong fork uses recognize_file on the FileRecognizer
         result = recognizer.recognize_file(file_path)
     except AttributeError:
-        # fallback if the method name differs
+        # older or alternate API
         result = djv.recognize(FileRecognizer, file_path)
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
