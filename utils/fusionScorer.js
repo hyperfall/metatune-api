@@ -1,11 +1,7 @@
 // utils/fusionScorer.js
 
 const path = require("path");
-const {
-  normalize,
-  exactScore,
-  fuzzyScore,
-} = require("./fuzzy");
+const { normalize, exactScore, fuzzyScore, similarity } = require("./fuzzy");
 
 /** Split filename into { artist, title, raw } */
 function extractNamePartsFromFilename(filePath) {
@@ -20,46 +16,41 @@ function extractNamePartsFromFilename(filePath) {
 
 /** Year proximity (±0=1, ±1=0.8, ±2=0.5) */
 function computeYearScore(mYear = "", oYear = "") {
-  const y1 = parseInt(mYear, 10);
-  const y2 = parseInt(oYear, 10);
-  if (!y1 || !y2) return 0;
-  const d = Math.abs(y1 - y2);
-  return d === 0 ? 1 : d === 1 ? 0.8 : d === 2 ? 0.5 : 0;
+  const y1 = parseInt(mYear, 10), y2 = parseInt(oYear, 10);
+  if (!y1||!y2) return 0;
+  const d = Math.abs(y1-y2);
+  return d===0?1:d===1?0.8:d===2?0.5:0;
 }
 
-/** Duration similarity (±3s=1, ±5=0.8, ±10=0.5) */
-function computeDurationScore(mDur = 0, oDur = 0) {
-  if (!mDur || !oDur) return 0;
-  const diff = Math.abs(mDur - oDur);
-  return diff <= 3 ? 1
-       : diff <= 5 ? 0.8
-       : diff <= 10 ? 0.5
-       : 0;
+/** Duration similarity (±3s=1, ±5s=0.8, ±10s=0.5) */
+function computeDurationScore(mDur=0,oDur=0){
+  if(!mDur||!oDur) return 0;
+  const diff=Math.abs(mDur-oDur);
+  return diff<=3?1:diff<=5?0.8:diff<=10?0.5:0;
 }
 
 /**
- * Composite “fusion” score:
- *  - fingerprint confidence
- *  - filename heuristics
- *  - embedded‐tag match
- *  - year proximity
- *  - duration similarity
+ * Composite fusion score
  */
-function scoreFusionMatch(filePath, metadata = {}, embeddedTags = {}) {
-  const fn = extractNamePartsFromFilename(filePath);
+function scoreFusionMatch(filePath, metadata={}, embeddedTags={}) {
+  // Dejavu boost (if you ever re-enable it)
+  if (metadata.source === "dejavu") {
+    return { score:0.95, confidence:"High", debug:{dejavuBoost:true} };
+  }
 
+  const fn = extractNamePartsFromFilename(filePath);
   const m = {
-    title:    normalize(metadata.title),
-    artist:   normalize(metadata.artist),
-    year:     metadata.year || "",
-    duration: metadata.duration || 0,
-    score:    (metadata.score || 0) / 100    // scale to 0–1
+    title: normalize(metadata.title),
+    artist: normalize(metadata.artist),
+    year: metadata.year||"",
+    duration: metadata.duration||0,
+    score: (metadata.score||0)/100
   };
   const t = {
-    title:    normalize(embeddedTags.title),
-    artist:   normalize(embeddedTags.artist),
-    year:     embeddedTags.year || "",
-    duration: embeddedTags.duration || 0
+    title: normalize(embeddedTags.title),
+    artist: normalize(embeddedTags.artist),
+    year: embeddedTags.year||"",
+    duration: embeddedTags.duration||0
   };
 
   // component scores
@@ -72,26 +63,26 @@ function scoreFusionMatch(filePath, metadata = {}, embeddedTags = {}) {
   const yearScore           = computeYearScore(m.year, t.year);
   const durationScore       = computeDurationScore(m.duration, t.duration);
 
-  // weights: fingerprint=60%, raw filename=10%, duration=10%, others share 20%
+  // weights
   const finalScore =
-      0.60 * fingerprintScore +
-      0.10 * filenameRawScore +
-      0.05 * filenameArtistScore +
-      0.05 * filenameTitleScore +
-      0.05 * tagArtistScore +
-      0.05 * tagTitleScore +
-      0.05 * yearScore +
-      0.10 * durationScore;
+        0.60*fingerprintScore +
+        0.10*filenameRawScore +
+        0.05*filenameArtistScore +
+        0.05*filenameTitleScore +
+        0.05*tagArtistScore +
+        0.05*tagTitleScore +
+        0.05*yearScore +
+        0.10*durationScore;
 
   const confidence =
-    finalScore >= 0.8 ? 'High' :
-    finalScore >= 0.5 ? 'Medium' :
-    'Low';
+    finalScore >= 0.8 ? "High" :
+    finalScore >= 0.5 ? "Medium" :
+    "Low";
 
   return {
     score: Number(finalScore.toFixed(3)),
     confidence,
-    debug: {
+    debug:{
       fingerprintScore,
       filenameArtistScore,
       filenameTitleScore,
