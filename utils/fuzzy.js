@@ -18,14 +18,17 @@ function normalize(str = "") {
  */
 function stripNoise(str = "") {
   return str
+    // anything in parens that starts with these keywords
     .replace(
       /\((?:official video|audio|lyrics?|remix|live|acoustic|radio edit|album version|extended version|remaster(?:ed)?|hd|hq|explicit|clean|instrumental)[^)]+\)/gi,
       ""
     )
+    // standalone words
     .replace(
       /\b(?:official|video|audio|lyrics?|remix|live|acoustic|radio edit|album version|extended version|remaster(?:ed)?|hd|hq|explicit|clean|instrumental)\b/gi,
       ""
     )
+    // trailing “-” or “:” leftovers
     .replace(/[-–:]\s*$/g, "")
     .trim();
 }
@@ -35,7 +38,7 @@ function exactScore(a = "", b = "") {
   return normalize(a) === normalize(b) ? 1 : 0;
 }
 
-/** Fuzzy: exact=1, contains=0.7, else 0 */
+/** Fuzzy filename‐based score: exact=1, contains=0.7, else 0 */
 function fuzzyScore(a = "", b = "") {
   a = normalize(a);
   b = normalize(b);
