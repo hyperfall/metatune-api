@@ -29,7 +29,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --production
 COPY . .
-RUN chmod +x /app/dejavu_cli.py
+RUN chmod +x /app/audfprint_cli.py
 
 EXPOSE 8080
 CMD ["node", "index.js"]
