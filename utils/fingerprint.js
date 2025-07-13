@@ -124,13 +124,12 @@ async function queryAcrcloudAll(buffer, prefix) {
 async function queryDejavu(filePath) {
   return new Promise(resolve => {
     exec(
-      `python3 -m dejavu recognize "${filePath}" --format json`,
+      `dejavu recognize "${filePath}" --format json`,
       { maxBuffer: 1024 * 2000 },
       (err, stdout, stderr) => {
         if (err) {
-          console.error(
-            `[Dejavu] Command failed: python3 -m dejavu recognize "${filePath}" --format json\n`,
-            stderr || err.message
+          logger.warn(
+            `[Dejavu] Command failed: dejavu recognize "${filePath}" --format json\n${stderr || err.message}`
           );
           return resolve(null);
         }
@@ -159,7 +158,6 @@ async function queryDejavu(filePath) {
     );
   });
 }
-
 /**
  * Returns ordered fingerprint candidates:
  * 1) ACRCloud hits (filtered by filename-artist)
