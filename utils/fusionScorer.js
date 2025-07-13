@@ -1,7 +1,7 @@
 // utils/fusionScorer.js
 
 const path = require("path");
-const { normalize, exactScore, fuzzyScore, similarity } = require("./fuzzy");
+const { stripNoise, normalize, exactScore, fuzzyScore, similarity } = require("./fuzzy");
 
 /** Split filename into { artist, title, raw } */
 function extractNamePartsFromFilename(filePath) {
