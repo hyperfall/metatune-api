@@ -5,7 +5,7 @@ import os
 import sys
 import json
 from dejavu import Dejavu
-from dejavu.logic.recognize import FileRecognizer
+from dejavu.logic.recognizer import FileRecognizer
 
 # Build config from ENV (falling back to Railway’s defaults)
 config = {
