@@ -19,7 +19,8 @@ RUN python3.11 -m venv /opt/dejavu-venv \
  && /opt/dejavu-venv/bin/pip install \
       PyDejavu-Rollong \
       psycopg2-binary \
-      pydub
+      pydub \
+      numpy==1.23.5
 
 # ─── put Dejavu’s CLI on PATH ──────────────────────────────────────────────────
 ENV PATH="/opt/dejavu-venv/bin:$PATH"
