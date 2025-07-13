@@ -14,10 +14,10 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 RUN which fpcalc && fpcalc -version && python3 --version
 
 # ─── Create venv & install the Worldveil/Rollong Dejavu fork + deps ────────────
-RUN python3 -m venv /opt/dejavu-venv \
+RUN python3.11 -m venv /opt/dejavu-venv \
  && /opt/dejavu-venv/bin/pip install --upgrade pip setuptools wheel \
  && /opt/dejavu-venv/bin/pip install \
-      git+https://github.com/worldveil/dejavu.git@master \
+      PyDejavu-Rollong \
       psycopg2-binary \
       pydub
 
