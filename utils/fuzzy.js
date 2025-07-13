@@ -1,63 +1,54 @@
 // utils/fuzzy.js
 
-const compareTwoStrings = require("string-similarity-js");
+// Destructure the named export so compareTwoStrings() is a function
+const { compareTwoStrings } = require("string-similarity-js");
 
 /**
- * Strip to lowercase alphanumeric
- */
-function normalize(str = "") {
-  return str
-    .toLowerCase()
-    .replace(/[^a-z0-9]/gi, "")
-    .trim();
-}
-
-/**
- * Remove common boilerplate from artist/title strings,
- * e.g. “(Official Video)”, “Live”, “Acoustic”, “Remastered”, etc.
+ * Strip out common boilerplate:
+ *  e.g. “(Official Video)”, “Live”, “Acoustic”, “Remastered”, etc.
  */
 function stripNoise(str = "") {
   return str
-    // anything in parens that starts with these keywords
     .replace(
       /\((?:official video|audio|lyrics?|remix|live|acoustic|radio edit|album version|extended version|remaster(?:ed)?|hd|hq|explicit|clean|instrumental)[^)]+\)/gi,
       ""
     )
-    // standalone words
     .replace(
       /\b(?:official|video|audio|lyrics?|remix|live|acoustic|radio edit|album version|extended version|remaster(?:ed)?|hd|hq|explicit|clean|instrumental)\b/gi,
       ""
     )
-    // trailing “-” or “:” leftovers
     .replace(/[-–:]\s*$/g, "")
     .trim();
 }
 
-/** Exact match = 1, else 0 */
+/** Lowercase alphanumeric only */
+function normalize(str = "") {
+  return str.toLowerCase().replace(/[^a-z0-9]/gi, "").trim();
+}
+
+/** Exact = 1, else 0 */
 function exactScore(a = "", b = "") {
   return normalize(a) === normalize(b) ? 1 : 0;
 }
 
-/** Fuzzy filename‐based score: exact=1, contains=0.7, else 0 */
+/** Simple fuzzy: exact=1, substr=0.7, else 0 */
 function fuzzyScore(a = "", b = "") {
-  a = normalize(a);
-  b = normalize(b);
-  if (!a || !b) return 0;
-  if (a === b) return 1;
-  if (a.includes(b) || b.includes(a)) return 0.7;
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  if (na.includes(nb) || nb.includes(na)) return 0.7;
   return 0;
 }
 
-/**
- * True string-similarity value between two normalized strings
- */
+/** “Real” similarity via string-similarity-js (0–1) */
 function similarity(a = "", b = "") {
   return compareTwoStrings(normalize(a), normalize(b));
 }
 
 module.exports = {
-  normalize,
   stripNoise,
+  normalize,
   exactScore,
   fuzzyScore,
   similarity,
