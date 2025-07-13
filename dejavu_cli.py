@@ -7,7 +7,7 @@ import json
 from dejavu import Dejavu
 from dejavu.logic.recognize import FileRecognizer
 
-# ─── build our config from ENV ─────────────────────────────────────────────
+# Build config from ENV
 config = {
     "database": {
         "host":     os.getenv("DJV_DB_HOST",     os.getenv("PGHOST",     "localhost")),
@@ -31,18 +31,11 @@ def main():
         print(json.dumps({"error": f"File not found: {file_path}"}))
         sys.exit(2)
 
-    # initialize Dejavu
     djv = Dejavu(config)
-
-    # pick the FileRecognizer
     recognizer = FileRecognizer(djv)
 
     try:
-        # run recognition
-        # note: djv.recognize will call recognizer.recognize_file under the hood
         result = djv.recognize(recognizer, file_path)
-
-        # output JSON
         print(json.dumps(result, indent=2, ensure_ascii=False))
     except Exception as e:
         print(json.dumps({"error": str(e)}))
