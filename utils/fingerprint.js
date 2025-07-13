@@ -142,7 +142,7 @@ async function queryAcrcloudAll(buffer, prefix) {
  */
 async function queryDejavu(filePath) {
   return new Promise(resolve => {
-    const cmd = `python3 /app/dejavu_cli.py recognize "${filePath}" --format json`;
+    const cmd = `python3.11 /app/dejavu_cli.py recognize "${filePath}" --format json`;
     exec(cmd, { maxBuffer: 1024 * 2000 }, (err, stdout, stderr) => {
       if (err) {
         logger.warn(`[Dejavu] Command failed:\n  ${cmd}\n  ${stderr || err.message}`);
