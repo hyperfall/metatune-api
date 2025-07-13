@@ -17,10 +17,9 @@ RUN which fpcalc && fpcalc -version && python3 --version
 RUN python3.11 -m venv /opt/dejavu-venv \
  && /opt/dejavu-venv/bin/pip install --upgrade pip setuptools wheel \
  && /opt/dejavu-venv/bin/pip install \
-      PyDejavu-Rollong \
+      git+https://github.com/dpwe/audfprint.git@master \
       psycopg2-binary \
-      pydub \
-      numpy==1.23.5
+      pydub 
 
 # ─── put Dejavu’s CLI on PATH ──────────────────────────────────────────────────
 ENV PATH="/opt/dejavu-venv/bin:$PATH"
