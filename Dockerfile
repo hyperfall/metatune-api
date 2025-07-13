@@ -18,11 +18,11 @@ RUN apt-get update && apt-get install -y \
 # ─── Verify fpcalc is installed ───────────────────────────────────────────────
 RUN which fpcalc && fpcalc -version
 
-# ─── Create Python venv & install PyDejavu + its Python deps ─────────────────
+# ─── Create Python venv & install the worldveil/dejavu fork + its deps ────
 RUN python3 -m venv /opt/dejavu-venv \
  && /opt/dejavu-venv/bin/pip install --upgrade pip setuptools wheel \
  && /opt/dejavu-venv/bin/pip install \
-      PyDejavu \
+      git+https://github.com/worldveil/dejavu.git@master \
       psycopg2-binary \
       pydub
 
