@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     libportaudio2 \
     portaudio19-dev \
+    git \
   && rm -rf /var/lib/apt/lists/*
 
 # ─── Verify fpcalc is installed ───────────────────────────────────────────────
