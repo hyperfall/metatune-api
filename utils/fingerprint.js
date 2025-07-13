@@ -23,13 +23,27 @@ const ACOUSTID_MAX = parseInt(process.env.ACOUSTID_MAX_RESULTS, 10) || 5;
 // minimum similarity between file-artist & candidate-artist (0–1)
 const ARTIST_SIM_THRESHOLD = parseFloat(process.env.ARTIST_SIM_THRESHOLD) || 0.5;
 
-// remove boilerplate words from titles/artists
+/**
+ * Remove common boilerplate from artist/title strings,
+ * e.g. “(Official Video)”, “Live”, “Acoustic”, “Remastered”, etc.
+ */
 function stripNoise(str) {
   return str
-    .replace(/\((official video|audio|lyrics?|remix)[^\)]*\)/gi, "")
-    .replace(/\b(official|video|audio|ft\.?|feat\.?)\b/gi, "")
+    // anything in parens that starts with these keywords
+    .replace(
+      /\((?:official video|audio|lyrics?|remix|live|acoustic|radio edit|album version|extended version|remaster(?:ed)?|hd|hq|explicit|clean|instrumental)[^)]+\)/gi,
+      ""
+    )
+    // standalone words
+    .replace(
+      /\b(?:official|video|audio|lyrics?|remix|live|acoustic|radio edit|album version|extended version|remaster(?:ed)?|hd|hq|explicit|clean|instrumental)\b/gi,
+      ""
+    )
+    // trailing “-” or “:” leftovers
+    .replace(/[-–:]\s*$/g, "")
     .trim();
 }
+
 
 /** Run fpcalc to extract duration & fingerprint */
 function runFpcalc(filePath) {
