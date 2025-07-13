@@ -7,19 +7,20 @@ import json
 from dejavu import Dejavu
 from dejavu.logic.recognizer import FileRecognizer
 
-# Build config from ENV (falling back to Railway’s defaults)
+# Build config from ENV (Railway‐style or fallbacks)
 config = {
     "database": {
-        "host":     os.getenv("DJV_DB_HOST",     os.getenv("PGHOST",     "localhost")),
-        "user":     os.getenv("DJV_DB_USER",     os.getenv("PGUSER",     "postgres")),
-        "password": os.getenv("DJV_DB_PASS",     os.getenv("PGPASSWORD", "")),
-        "database": os.getenv("DJV_DB_NAME",     os.getenv("PGDATABASE", "postgres")),
-        "port":     int(os.getenv("DJV_DB_PORT", os.getenv("PGPORT",     "5432"))),
-        "type":     os.getenv("DJV_DB_TYPE",     "postgres"),
+        "host":     os.getenv("DJV_DB_HOST",  os.getenv("PGHOST",     "localhost")),
+        "user":     os.getenv("DJV_DB_USER",  os.getenv("PGUSER",     "postgres")),
+        "password": os.getenv("DJV_DB_PASS",  os.getenv("PGPASSWORD", "")),
+        "database": os.getenv("DJV_DB_NAME",  os.getenv("PGDATABASE", "postgres")),
+        "port":     int(os.getenv("DJV_DB_PORT", os.getenv("PGPORT",   "5432"))),
+        "type":     os.getenv("DJV_DB_TYPE",  "postgres"),
     },
     "fingerprint_limit":  int(os.getenv("DJV_FP_LIMIT",       "5")),
     "match_threshold":    float(os.getenv("DJV_MATCH_THRESHOLD","0.2")),
 }
+
 
 def main():
     if len(sys.argv) < 3 or sys.argv[1] != "recognize":
@@ -31,17 +32,19 @@ def main():
         print(json.dumps({"error": f"File not found: {file_path}"}))
         sys.exit(2)
 
-    # initialize Dejavu
+    # Initialize Dejavu
     djv = Dejavu(config)
-    recognizer = FileRecognizer(djv)
 
+    # Option A: use the helper on the class
     try:
-        # Rollong API: use recognize_file()
+        result = djv.recognize(FileRecognizer, file_path)
+    except AttributeError:
+        # Option B: or call the instance method directly
+        recognizer = FileRecognizer(djv)
         result = recognizer.recognize_file(file_path)
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-    except Exception as e:
-        print(json.dumps({"error": str(e)}))
-        sys.exit(3)
+
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
 
 if __name__ == "__main__":
     main()
