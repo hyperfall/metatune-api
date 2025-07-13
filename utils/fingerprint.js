@@ -129,7 +129,7 @@ async function getFingerprintCandidates(filePath) {
   acrs = acrs
     .filter(c => {
       if (!normFileArtist) return true;
-      const sim = similarity(c.recording.artist, fileArtist);
+      const sim = similarity(recArtistNorm, normFileArtist);
       const ok  = sim >= ARTIST_SIM_THRESHOLD;
       if (!ok) {
         logger.warn(
