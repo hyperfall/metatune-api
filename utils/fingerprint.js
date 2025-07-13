@@ -129,6 +129,7 @@ async function getFingerprintCandidates(filePath) {
   acrs = acrs
     .filter(c => {
       if (!normFileArtist) return true;
+      const recArtistNorm = normalizeTitle(stripNoise(c.recording.artist));
       const sim = similarity(recArtistNorm, normFileArtist);
       const ok  = sim >= ARTIST_SIM_THRESHOLD;
       if (!ok) {
@@ -179,6 +180,24 @@ async function getFingerprintCandidates(filePath) {
     } catch (err) {
       logger.error(`[TextFallback] ${err.message}`);
     }
+  }
+
+  // 4) Guarantee at least one candidate (filename-only)
+  if (out.length === 0) {
+    const raw = path.basename(filePath, path.extname(filePath));
+    const [artistRaw, titleRaw] = parts.length >= 2 ? parts : ["", raw];
+    out.push({
+      method: "filename-only",
+      score: 0,
+      recording: {
+        title: normalizeTitle(stripNoise(titleRaw)),
+        artist: normalizeTitle(stripNoise(artistRaw)),
+        album: "",
+        date: "",
+        genre: "",
+        duration: fp.duration
+      }
+    });
   }
 
   return out;
