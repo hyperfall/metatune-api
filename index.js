@@ -15,7 +15,7 @@ console.log(`🪵 Logging is ${process.env.DEBUG_LOGGING === "true" ? "ENABLED" 
 
 const app = express();
 // preserve original client IP for rate-limiting
-app.set("trust proxy", true);
+app.set("trust proxy", 1);
 
 const port = process.env.PORT || 3000;
 
