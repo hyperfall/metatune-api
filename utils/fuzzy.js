@@ -1,7 +1,7 @@
 // utils/fuzzy.js
 
-// directly require the compareTwoStrings function
-const compareTwoStrings = require("string-similarity-js");
+// Pull only compareTwoStrings from the package
+const { compareTwoStrings } = require("string-similarity-js");
 
 /**
  * Strip out common boilerplate:
