@@ -35,7 +35,9 @@
     "sqlite3": "^5.1.7",
     "helmet": "^8.1.0",
     "express-rate-limit": "^7.5.1",
-    "compression": "^1.8.0"
+    "compression": "^1.8.0",
+    "string-similarity-js": "^2.1.4"
+
 
 
 
