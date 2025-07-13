@@ -128,32 +128,40 @@ async function queryAcrcloudAll(buffer, prefix) {
  * Dejavu spectrogram-based fallback via Python wrapper
  */
 async function queryDejavu(filePath) {
-  return new Promise(resolve => {
-    // Make sure your Dockerfile has dejavu_cli.py at /app/dejavu_cli.py
+  return new Promise((resolve) => {
+    // we explicitly call your dejavu_cli.py script
     const cmd = `python3 /app/dejavu_cli.py recognize "${filePath}" --format json`;
+
     exec(cmd, { maxBuffer: 1024 * 2000 }, (err, stdout, stderr) => {
       if (err) {
-        logger.warn(`[Dejavu] wrapper error:\n${stderr||err.message}`);
+        logger.warn(
+          `[Dejavu] Command failed:\n  ${cmd}\n  ${stderr || err.message}`
+        );
         return resolve(null);
       }
+
       try {
         const r = JSON.parse(stdout);
-        if (r.error || !r.song_name) return resolve(null);
+        if (r.error || !r.song) {
+          if (r.error) logger.warn(`[Dejavu] wrapper error: ${r.error}`);
+          return resolve(null);
+        }
+        const song = r.song;
         return resolve({
           method: "dejavu",
-          score: Math.round((r.INPUT_CONFIDENCE||0)*100),
+          score: 90,
           recording: {
-            mbid:  r.SONG_ID      || null,
-            title: r.SONG_NAME    || "",
-            artist:r.artist       || "",
-            album: r.album        || "",
-            date:  r.date         || "",
+            mbid: song.id || null,
+            title: song.title,
+            artist: song.artist,
+            album: song.album,
+            date: song.year,
             releaseGroupMbid: null,
             genre: null
           }
         });
-      } catch (e) {
-        logger.warn(`[Dejavu] JSON parse error: ${e.message}`);
+      } catch (parseErr) {
+        logger.warn(`[Dejavu] JSON parse error: ${parseErr.message}`);
         return resolve(null);
       }
     });
