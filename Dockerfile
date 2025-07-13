@@ -2,15 +2,11 @@
 # Use Node.js 18 slim base image
 FROM node:18-slim
 
-# Install system dependencies:
-#  - ffmpeg & Chromaprint for audio fingerprinting
-#  - Python3, venv, dev headers, and build tools for Dejavu and psycopg2
-#  - PortAudio dev packages so PyAudio will compile
+# ─── System dependencies for ffmpeg, Chromaprint, Python & audio libs ────────
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libchromaprint-tools \
     python3 \
-    python3-pip \
     python3-venv \
     python3-dev \
     build-essential \
@@ -20,29 +16,35 @@ RUN apt-get update && apt-get install -y \
     portaudio19-dev \
   && rm -rf /var/lib/apt/lists/*
 
-# Verify fpcalc is installed
+# ─── Verify fpcalc is available ──────────────────────────────────────────────
 RUN which fpcalc && fpcalc -version
 
-# Create a Python venv for Dejavu and install the package with binary deps
+# ─── Create a Python venv for Dejavu, install the library + its deps ───────
 RUN python3 -m venv /opt/dejavu-venv \
  && /opt/dejavu-venv/bin/pip install --upgrade pip setuptools wheel \
- && /opt/dejavu-venv/bin/pip install PyDejavu-Rollong psycopg2-binary
+ && /opt/dejavu-venv/bin/pip install \
+      PyDejavu-Rollong \
+      psycopg2-binary \
+      pydub
 
-# Ensure Dejavu CLI is on PATH
+# ─── Ensure the venv’s python & dejavu_cli.py wrapper run under that venv ───
 ENV PATH="/opt/dejavu-venv/bin:$PATH"
 
-# Create app directory
+# ─── App setup ───────────────────────────────────────────────────────────────
 WORKDIR /app
 
-# Install Node.js dependencies
+# Install Node.js deps
 COPY package*.json ./
 RUN npm install --production
 
-# Copy source code
+# Copy your entire codebase (including dejavu_cli.py & utils/)
 COPY . .
 
-# Expose service port
+# Make sure your wrapper is executable (optional if you always call it via `python`)
+RUN chmod +x /app/dejavu_cli.py
+
+# Expose your service port
 EXPOSE 8080
 
-# Start the Node.js app
+# Start the Node.js server
 CMD ["node", "index.js"]
