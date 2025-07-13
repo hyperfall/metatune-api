@@ -7,7 +7,7 @@ import json
 from dejavu import Dejavu
 from dejavu.logic.recognize import FileRecognizer
 
-# Build config from ENV
+# Build config from ENV (falling back to Railway’s defaults)
 config = {
     "database": {
         "host":     os.getenv("DJV_DB_HOST",     os.getenv("PGHOST",     "localhost")),
@@ -31,11 +31,13 @@ def main():
         print(json.dumps({"error": f"File not found: {file_path}"}))
         sys.exit(2)
 
+    # initialize Dejavu
     djv = Dejavu(config)
     recognizer = FileRecognizer(djv)
 
     try:
-        result = djv.recognize(recognizer, file_path)
+        # Rollong API: use recognize_file()
+        result = recognizer.recognize_file(file_path)
         print(json.dumps(result, indent=2, ensure_ascii=False))
     except Exception as e:
         print(json.dumps({"error": str(e)}))
