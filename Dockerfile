@@ -4,7 +4,7 @@ FROM node:18-slim
 RUN apt-get update && apt-get install -y \
     ffmpeg libchromaprint-tools \
     python3.11 python3.11-venv python3.11-dev \
-    build-essential libpq-dev libportaudio2 portaudio19-dev \
+    build-essential libpq-dev libportaudio2 portaudio19-dev git \
   && rm -rf /var/lib/apt/lists/*
 
 # ─── point python3 → python3.11 ───────────────────────────────────────────────
