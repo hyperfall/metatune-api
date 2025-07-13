@@ -40,7 +40,7 @@ function isCompilation(albumName) {
   return keywords.some(k => albumName?.toLowerCase().includes(k));
 }
 
-/** Primary ACRCloud lookup returning up to ACR_MAX hits */
+/** Primary ACRCloud lookup */
 async function queryAcrcloudAll(buffer, prefix) {
   try {
     const result = await ACR.identify(buffer);
@@ -68,7 +68,7 @@ async function queryAcrcloudAll(buffer, prefix) {
   }
 }
 
-/** Fingerprint lookup via AcoustID → MusicBrainz */
+/** AcoustID → MusicBrainz lookup */
 async function queryMusicBrainzByFingerprint(fp, prefix) {
   try {
     const resp = await axios.get("https://api.acoustid.org/v2/lookup", {
@@ -84,7 +84,6 @@ async function queryMusicBrainzByFingerprint(fp, prefix) {
       path.join("logs", `${prefix}-acoustid.json`),
       JSON.stringify(results, null, 2)
     );
-
     const out = [];
     for (const top of results.slice(0, ACOUSTID_MAX)) {
       const score = top.score || 0;
@@ -112,32 +111,25 @@ async function queryMusicBrainzByFingerprint(fp, prefix) {
   }
 }
 
-/**
- * Returns ordered fingerprint candidates:
- * 1) ACRCloud hits (filtered by file-artist similarity)
- * 2) AcoustID→MusicBrainz hits
- * 3) Filename-based text-only fallback
- */
+/** Returns ordered fingerprint candidates */
 async function getFingerprintCandidates(filePath) {
-  // 0) compute fingerprint & load buffer
   const fp     = await runFpcalc(filePath);
   const buffer = fs.readFileSync(filePath);
   const prefix = path.basename(filePath, path.extname(filePath));
 
-  // extract & normalize artist from filename "Artist - Title"
+  // extract & clean artist from filename “Artist - Title”
   const parts          = prefix.split(" - ");
   const fileArtist     = stripNoise(parts[0] || "");
-  const normFileArtist = normalizeTitle(fileArtist).toLowerCase();
+  const normFileArtist = normalizeTitle(fileArtist);
 
   const out = [];
 
-  // 1) ACRCloud
+  // 1) ACRCloud hits
   let acrs = await queryAcrcloudAll(buffer, prefix);
   acrs = acrs
     .filter(c => {
       if (!normFileArtist) return true;
-      const recNorm = normalizeTitle(stripNoise(c.recording.artist)).toLowerCase();
-      const sim = similarity(recNorm, normFileArtist);
+      const sim = similarity(c.recording.artist, fileArtist);
       const ok  = sim >= ARTIST_SIM_THRESHOLD;
       if (!ok) {
         logger.warn(
@@ -146,7 +138,7 @@ async function getFingerprintCandidates(filePath) {
       }
       return ok;
     })
-    .sort((a,b)=> (b.score||0) - (a.score||0));
+    .sort((a,b)=> (b.score||0)-(a.score||0));
 
   for (const c of acrs) {
     c.recording.duration = fp.duration;
@@ -198,7 +190,7 @@ async function getBestFingerprintMatch(filePath) {
   return cands[0] || null;
 }
 
-/** Normalize recording fields */
+/** Clean up recording titles/albums */
 function clean(match) {
   match.recording.title = normalizeTitle(match.recording.title);
   match.recording.album = normalizeTitle(match.recording.album);
