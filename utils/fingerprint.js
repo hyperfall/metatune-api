@@ -7,8 +7,7 @@ const normalizeTitle = require("./normalizeTitle");
 const logger = require("./logger");
 const fs = require("fs");
 const path = require("path");
-// pull compareTwoStrings directly from string-similarity-js
-const compareTwoStrings = require("string-similarity-js");
+const { stripNoise, similarity } = require("./fuzzy");
 const { getOfficialAlbumInfo } = require("./musicbrainzHelper");
 
 // ACRCloud client
@@ -23,27 +22,6 @@ const ACR_MAX = parseInt(process.env.ACR_MAX_RESULTS, 10) || 5;
 const ACOUSTID_MAX = parseInt(process.env.ACOUSTID_MAX_RESULTS, 10) || 5;
 // minimum similarity between file-artist & candidate-artist (0–1)
 const ARTIST_SIM_THRESHOLD = parseFloat(process.env.ARTIST_SIM_THRESHOLD) || 0.5;
-
-/**
- * Remove common boilerplate from artist/title strings,
- * e.g. “(Official Video)”, “Live”, “Acoustic”, “Remastered”, etc.
- */
-function stripNoise(str) {
-  return str
-    // anything in parens that starts with these keywords
-    .replace(
-      /\((?:official video|audio|lyrics?|remix|live|acoustic|radio edit|album version|extended version|remaster(?:ed)?|hd|hq|explicit|clean|instrumental)[^)]+\)/gi,
-      ""
-    )
-    // standalone words
-    .replace(
-      /\b(?:official|video|audio|lyrics?|remix|live|acoustic|radio edit|album version|extended version|remaster(?:ed)?|hd|hq|explicit|clean|instrumental)\b/gi,
-      ""
-    )
-    // trailing “-” or “:” leftovers
-    .replace(/[-–:]\s*$/g, "")
-    .trim();
-}
 
 /** Run fpcalc to extract duration & fingerprint */
 function runFpcalc(filePath) {
@@ -62,9 +40,7 @@ function isCompilation(albumName) {
   return keywords.some(k => albumName?.toLowerCase().includes(k));
 }
 
-/**
- * Primary ACRCloud lookup returning up to ACR_MAX hits
- */
+/** Primary ACRCloud lookup returning up to ACR_MAX hits */
 async function queryAcrcloudAll(buffer, prefix) {
   try {
     const result = await ACR.identify(buffer);
@@ -92,10 +68,7 @@ async function queryAcrcloudAll(buffer, prefix) {
   }
 }
 
-/**
- * Fingerprint lookup via AcoustID → MusicBrainz
- * Returns up to ACOUSTID_MAX hits
- */
+/** Fingerprint lookup via AcoustID → MusicBrainz */
 async function queryMusicBrainzByFingerprint(fp, prefix) {
   try {
     const resp = await axios.get("https://api.acoustid.org/v2/lookup", {
@@ -141,9 +114,9 @@ async function queryMusicBrainzByFingerprint(fp, prefix) {
 
 /**
  * Returns ordered fingerprint candidates:
- *  1) ACRCloud hits (filtered by file-artist similarity)
- *  2) AcoustID→MusicBrainz hits
- *  3) Filename-based text-only fallback
+ * 1) ACRCloud hits (filtered by file-artist similarity)
+ * 2) AcoustID→MusicBrainz hits
+ * 3) Filename-based text-only fallback
  */
 async function getFingerprintCandidates(filePath) {
   // 0) compute fingerprint & load buffer
@@ -153,8 +126,8 @@ async function getFingerprintCandidates(filePath) {
 
   // extract & normalize artist from filename "Artist - Title"
   const parts          = prefix.split(" - ");
-  const fileArtist     = stripNoise(parts[0] || "").toLowerCase().trim();
-  const normFileArtist = normalizeTitle(fileArtist);
+  const fileArtist     = stripNoise(parts[0] || "");
+  const normFileArtist = normalizeTitle(fileArtist).toLowerCase();
 
   const out = [];
 
@@ -163,8 +136,8 @@ async function getFingerprintCandidates(filePath) {
   acrs = acrs
     .filter(c => {
       if (!normFileArtist) return true;
-      const recArtistNorm = normalizeTitle(stripNoise(c.recording.artist)).toLowerCase();
-      const sim = compareTwoStrings(recArtistNorm, normFileArtist);
+      const recNorm = normalizeTitle(stripNoise(c.recording.artist)).toLowerCase();
+      const sim = similarity(recNorm, normFileArtist);
       const ok  = sim >= ARTIST_SIM_THRESHOLD;
       if (!ok) {
         logger.warn(
@@ -177,7 +150,6 @@ async function getFingerprintCandidates(filePath) {
 
   for (const c of acrs) {
     c.recording.duration = fp.duration;
-    // fallback on MB if it’s a “compilation”
     if (isCompilation(c.recording.album)) {
       logger.warn(`[fallback] Compilation album "${c.recording.album}", trying MB fallback…`);
       const fb = await getOfficialAlbumInfo(c.recording.artist, c.recording.title);
