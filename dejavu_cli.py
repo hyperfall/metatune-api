@@ -1,41 +1,52 @@
+#!/usr/bin/env python3
 # dejavu_cli.py
 
 import os
 import sys
 import json
 from dejavu import Dejavu
-from dejavu.recognize import FileRecognizer
+from dejavu.logic.recognize import FileRecognizer
 
-# Build config from environment variables
+# ─── build our config from ENV ─────────────────────────────────────────────
 config = {
     "database": {
-        "host":     os.getenv("DJV_DB_HOST"    , os.getenv("PGHOST"    , "localhost")),
-        "user":     os.getenv("DJV_DB_USER"    , os.getenv("PGUSER"    , "postgres")),
-        "password": os.getenv("DJV_DB_PASS"    , os.getenv("PGPASSWORD", "")),
-        "database": os.getenv("DJV_DB_NAME"    , os.getenv("PGDATABASE", "postgres")),
-        "port":     int(os.getenv("DJV_DB_PORT", os.getenv("PGPORT"    , "5432"))),
-        "type":     os.getenv("DJV_DB_TYPE"    , "postgres")
+        "host":     os.getenv("DJV_DB_HOST",     os.getenv("PGHOST",     "localhost")),
+        "user":     os.getenv("DJV_DB_USER",     os.getenv("PGUSER",     "postgres")),
+        "password": os.getenv("DJV_DB_PASS",     os.getenv("PGPASSWORD", "")),
+        "database": os.getenv("DJV_DB_NAME",     os.getenv("PGDATABASE", "postgres")),
+        "port":     int(os.getenv("DJV_DB_PORT", os.getenv("PGPORT",     "5432"))),
+        "type":     os.getenv("DJV_DB_TYPE",     "postgres"),
     },
-    "fingerprint_limit":  int(os.getenv("DJV_FP_LIMIT"       , "5")),
-    "match_threshold":    float(os.getenv("DJV_MATCH_THRESHOLD", "0.2"))
+    "fingerprint_limit":  int(os.getenv("DJV_FP_LIMIT",       "5")),
+    "match_threshold":    float(os.getenv("DJV_MATCH_THRESHOLD","0.2")),
 }
 
 def main():
     if len(sys.argv) < 3 or sys.argv[1] != "recognize":
-        print("Usage: python dejavu_cli.py recognize <file> --format json", file=sys.stderr)
+        print("Usage: dejavu_cli.py recognize <file> --format json", file=sys.stderr)
         sys.exit(1)
 
     file_path = sys.argv[2]
+    if not os.path.isfile(file_path):
+        print(json.dumps({"error": f"File not found: {file_path}"}))
+        sys.exit(2)
+
+    # initialize Dejavu
     djv = Dejavu(config)
+
+    # pick the FileRecognizer
     recognizer = FileRecognizer(djv)
 
     try:
-        result = recognizer.recognize_file(file_path)
-        # JSON output
-        print(json.dumps(result, indent=2))
+        # run recognition
+        # note: djv.recognize will call recognizer.recognize_file under the hood
+        result = djv.recognize(recognizer, file_path)
+
+        # output JSON
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     except Exception as e:
         print(json.dumps({"error": str(e)}))
-        sys.exit(2)
+        sys.exit(3)
 
 if __name__ == "__main__":
     main()
