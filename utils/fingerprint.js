@@ -7,7 +7,7 @@ const normalizeTitle = require("./normalizeTitle");
 const logger = require("./logger");
 const fs = require("fs");
 const path = require("path");
-const { findBestRelease, getOfficialAlbumInfo } = require("./musicbrainzHelper");
+const { getOfficialAlbumInfo } = require("./musicbrainzHelper");
 
 const ACR = new acrcloud({
   host: process.env.ACR_HOST,
@@ -68,8 +68,10 @@ async function queryMusicBrainzByFingerprint(fp, prefix) {
       }
     });
     const results = resp.data.results || [];
-    fs.writeFileSync(path.join("logs", `${prefix}-acoustid.json`),
-                     JSON.stringify(results, null, 2));
+    fs.writeFileSync(
+      path.join("logs", `${prefix}-acoustid.json`),
+      JSON.stringify(results, null, 2)
+    );
     if (!results.length || !results[0].recordings?.length) return null;
 
     const top = results[0];
@@ -99,8 +101,10 @@ async function queryMusicBrainzByFingerprint(fp, prefix) {
 async function queryAcrcloudAll(buffer, prefix) {
   try {
     const result = await ACR.identify(buffer);
-    fs.writeFileSync(path.join("logs", `${prefix}-acr.json`),
-                     JSON.stringify(result, null, 2));
+    fs.writeFileSync(
+      path.join("logs", `${prefix}-acr.json`),
+      JSON.stringify(result, null, 2)
+    );
     const list = result.metadata?.music || [];
     return list.map(m => ({
       method: "acrcloud",
@@ -120,44 +124,42 @@ async function queryAcrcloudAll(buffer, prefix) {
   }
 }
 
-/** Dejavu spectrogram-based fallback */
+/**
+ * Dejavu spectrogram-based fallback via Python wrapper
+ */
 async function queryDejavu(filePath) {
   return new Promise(resolve => {
-    exec(
-      `dejavu recognize "${filePath}" --format json`,
-      { maxBuffer: 1024 * 2000 },
-      (err, stdout, stderr) => {
-        if (err) {
-          logger.warn(
-            `[Dejavu] Command failed: dejavu recognize "${filePath}" --format json\n${stderr || err.message}`
-          );
-          return resolve(null);
-        }
-        try {
-          const r = JSON.parse(stdout);
-          if (!r?.song) return resolve(null);
-          const song = r.song;
-          resolve({
-            method: "dejavu",
-            score: 90,
-            recording: {
-              mbid: song.mbid || null,
-              title: song.title,
-              artist: song.artist,
-              album: song.album,
-              date: song.year,
-              releaseGroupMbid: null,
-              genre: null
-            }
-          });
-        } catch (e) {
-          logger.warn(`[Dejavu] Parse error: ${e.message}`);
-          resolve(null);
-        }
+    // Make sure your Dockerfile has dejavu_cli.py at /app/dejavu_cli.py
+    const cmd = `python3 /app/dejavu_cli.py recognize "${filePath}" --format json`;
+    exec(cmd, { maxBuffer: 1024 * 2000 }, (err, stdout, stderr) => {
+      if (err) {
+        logger.warn(`[Dejavu] wrapper error:\n${stderr||err.message}`);
+        return resolve(null);
       }
-    );
+      try {
+        const r = JSON.parse(stdout);
+        if (r.error || !r.song_name) return resolve(null);
+        return resolve({
+          method: "dejavu",
+          score: Math.round((r.INPUT_CONFIDENCE||0)*100),
+          recording: {
+            mbid:  r.SONG_ID      || null,
+            title: r.SONG_NAME    || "",
+            artist:r.artist       || "",
+            album: r.album        || "",
+            date:  r.date         || "",
+            releaseGroupMbid: null,
+            genre: null
+          }
+        });
+      } catch (e) {
+        logger.warn(`[Dejavu] JSON parse error: ${e.message}`);
+        return resolve(null);
+      }
+    });
   });
 }
+
 /**
  * Returns ordered fingerprint candidates:
  * 1) ACRCloud hits (filtered by filename-artist)
@@ -241,7 +243,7 @@ async function getFingerprintCandidates(filePath) {
   return out;
 }
 
-/** Legacy: return only the top-scoring candidate */
+/** Return only the top-scoring candidate */
 async function getBestFingerprintMatch(filePath) {
   const cands = await getFingerprintCandidates(filePath);
   return cands[0]||null;
