@@ -32,7 +32,7 @@ function isCompilation(albumName) {
   return keywords.some(k => albumName?.toLowerCase().includes(k));
 }
 
-/** Fallback: robust MusicBrainz lookup when a compilation is detected */
+/** Fallback MusicBrainz lookup when a compilation is detected */
 async function queryMusicBrainzFallback(artist, title) {
   try {
     const info = await getOfficialAlbumInfo(artist, title, "");
@@ -124,14 +124,10 @@ async function queryAcrcloudAll(buffer, prefix) {
   }
 }
 
-/**
- * Dejavu spectrogram-based fallback via Python wrapper
- */
+/** Dejavu spectrogram-based fallback via your Python wrapper */
 async function queryDejavu(filePath) {
-  return new Promise((resolve) => {
-    // we explicitly call your dejavu_cli.py script
+  return new Promise(resolve => {
     const cmd = `python3 /app/dejavu_cli.py recognize "${filePath}" --format json`;
-
     exec(cmd, { maxBuffer: 1024 * 2000 }, (err, stdout, stderr) => {
       if (err) {
         logger.warn(
@@ -139,7 +135,6 @@ async function queryDejavu(filePath) {
         );
         return resolve(null);
       }
-
       try {
         const r = JSON.parse(stdout);
         if (r.error || !r.song) {
@@ -151,7 +146,7 @@ async function queryDejavu(filePath) {
           method: "dejavu",
           score: 90,
           recording: {
-            mbid: song.id || null,
+            mbid: song.mbid || null,
             title: song.title,
             artist: song.artist,
             album: song.album,
@@ -180,12 +175,12 @@ async function getFingerprintCandidates(filePath) {
   const buffer = fs.readFileSync(filePath);
   const prefix = path.basename(filePath, path.extname(filePath));
 
-  // Extract artist from filename "Artist - Title"
+  // extract artist part from "Artist - Title"
   const parts = prefix.split(" - ");
   const fileArtist = (parts[0]||"").trim();
   const normFileArtist = normalizeTitle(fileArtist);
 
-  // 1) ACRCloud (filter out wrong-artist hits)
+  // 1) ACRCloud
   const acrRaw = await queryAcrcloudAll(buffer, prefix);
   const acrs = acrRaw
     .filter(c => {
@@ -206,10 +201,7 @@ async function getFingerprintCandidates(filePath) {
       logger.warn(
         `[fallback] Compilation detected (“${c.recording.album}”), using MB fallback…`
       );
-      const fb = await queryMusicBrainzFallback(
-        c.recording.artist,
-        c.recording.title
-      );
+      const fb = await queryMusicBrainzFallback(c.recording.artist, c.recording.title);
       if (fb) {
         fb.recording.duration = fp.duration;
         out.push(clean(fb));
@@ -235,9 +227,7 @@ async function getFingerprintCandidates(filePath) {
   if (parts.length >= 2) {
     const [artistPart, titlePart] = parts;
     try {
-      const info = await getOfficialAlbumInfo(
-        artistPart.trim(), titlePart.trim()
-      );
+      const info = await getOfficialAlbumInfo(artistPart.trim(), titlePart.trim());
       if (info) {
         const fb = { method: "text-only", score: 0, recording: info };
         fb.recording.duration = fp.duration;
@@ -254,7 +244,7 @@ async function getFingerprintCandidates(filePath) {
 /** Return only the top-scoring candidate */
 async function getBestFingerprintMatch(filePath) {
   const cands = await getFingerprintCandidates(filePath);
-  return cands[0]||null;
+  return cands[0] || null;
 }
 
 /** Normalize recording fields */
