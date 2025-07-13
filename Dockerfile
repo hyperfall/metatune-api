@@ -1,7 +1,8 @@
 # ========================= Dockerfile =========================
+# Use Node.js 18 slim base image
 FROM node:18-slim
 
-# ─── System deps: ffmpeg, chromaprint, Python, build tools, portaudio, libpq, BLAS, Git ───
+# ─── System deps: ffmpeg, Chromaprint, Python, build tools, portaudio, libpq ───
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libchromaprint-tools \
@@ -12,23 +13,20 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     libportaudio2 \
     portaudio19-dev \
-    git \
-    gfortran \
-    libatlas-base-dev \
   && rm -rf /var/lib/apt/lists/*
 
-# ─── Verify fpcalc is installed ───────────────────────────────────────────────
+# ─── Verify fpcalc is installed ──────────────────────────────────────────────
 RUN which fpcalc && fpcalc -version
 
-# ─── Create Python venv & install worldveil/dejavu + its deps ───────────────
+# ─── Create Python venv & install the Rollong Dejavu fork + its deps ───────
 RUN python3 -m venv /opt/dejavu-venv \
  && /opt/dejavu-venv/bin/pip install --upgrade pip setuptools wheel \
  && /opt/dejavu-venv/bin/pip install \
-      git+https://github.com/worldveil/dejavu.git@master \
+      PyDejavu-Rollong \
       psycopg2-binary \
       pydub
 
-# ─── Make sure our venv’s python & dejavu wrapper are on PATH ────────────────
+# ─── Ensure the venv’s python & dejavu CLI are on PATH ───────────────────────
 ENV PATH="/opt/dejavu-venv/bin:$PATH"
 
 # ─── Node.js app setup ────────────────────────────────────────────────────────
@@ -37,7 +35,7 @@ COPY package*.json ./
 RUN npm install --production
 COPY . .
 
-# ─── Ensure our Python wrapper is executable ──────────────────────────────────
+# ─── Make our Python wrapper executable ──────────────────────────────────────
 RUN chmod +x /app/dejavu_cli.py
 
 # ─── Expose & run ─────────────────────────────────────────────────────────────
