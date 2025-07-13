@@ -1,35 +1,28 @@
+# ========================= Dockerfile =========================
+# Use Node.js 18 slim base image
 FROM node:18-slim
 
-# ─── System deps (ffmpeg, chromaprint, Python3.11, headers, portaudio, libpq) ───
+# ─── Install only what we need for fpcalc & Chromaprint ───────────────────────
 RUN apt-get update && apt-get install -y \
-    ffmpeg libchromaprint-tools \
-    python3.11 python3.11-venv python3.11-dev \
-    build-essential libpq-dev libportaudio2 portaudio19-dev git \
+    ffmpeg \
+    libchromaprint-tools \
   && rm -rf /var/lib/apt/lists/*
 
-# ─── point python3 → python3.11 ───────────────────────────────────────────────
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+# ─── Verify fpcalc is available ──────────────────────────────────────────────
+RUN which fpcalc && fpcalc -version
 
-# ─── sanity checks ─────────────────────────────────────────────────────────────
-RUN which fpcalc && fpcalc -version && python3 --version
-
-# ─── Create venv & install the Worldveil/Rollong Dejavu fork + deps ────────────
-RUN python3.11 -m venv /opt/dejavu-venv \
- && /opt/dejavu-venv/bin/pip install --upgrade pip setuptools wheel \
- && /opt/dejavu-venv/bin/pip install \
-      git+https://github.com/dpwe/audfprint.git@master \
-      psycopg2-binary \
-      pydub 
-
-# ─── put Dejavu’s CLI on PATH ──────────────────────────────────────────────────
-ENV PATH="/opt/dejavu-venv/bin:$PATH"
-
-# ─── Node.js app setup ────────────────────────────────────────────────────────
+# ─── App setup ───────────────────────────────────────────────────────────────
 WORKDIR /app
+
+# Copy package.json & install production deps
 COPY package*.json ./
 RUN npm install --production
-COPY . .
-RUN chmod +x /app/audfprint_cli.py
 
+# Copy the rest of your source
+COPY . .
+
+# Expose service port
 EXPOSE 8080
+
+# Start the Node.js app
 CMD ["node", "index.js"]
