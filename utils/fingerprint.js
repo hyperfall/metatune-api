@@ -7,7 +7,8 @@ const normalizeTitle = require("./normalizeTitle");
 const logger = require("./logger");
 const fs = require("fs");
 const path = require("path");
-const stringSimilarity = require("string-similarity-js");
+// pull compareTwoStrings directly from string-similarity-js
+const compareTwoStrings = require("string-similarity-js");
 const { getOfficialAlbumInfo } = require("./musicbrainzHelper");
 
 // ACRCloud client
@@ -43,7 +44,6 @@ function stripNoise(str) {
     .replace(/[-–:]\s*$/g, "")
     .trim();
 }
-
 
 /** Run fpcalc to extract duration & fingerprint */
 function runFpcalc(filePath) {
@@ -164,7 +164,7 @@ async function getFingerprintCandidates(filePath) {
     .filter(c => {
       if (!normFileArtist) return true;
       const recArtistNorm = normalizeTitle(stripNoise(c.recording.artist)).toLowerCase();
-      const sim = stringSimilarity.compareTwoStrings(recArtistNorm, normFileArtist);
+      const sim = compareTwoStrings(recArtistNorm, normFileArtist);
       const ok  = sim >= ARTIST_SIM_THRESHOLD;
       if (!ok) {
         logger.warn(
@@ -185,10 +185,7 @@ async function getFingerprintCandidates(filePath) {
         out.push({
           method: "musicbrainz-fallback",
           score: 100,
-          recording: {
-            ...fb,
-            duration: fp.duration
-          }
+          recording: { ...fb, duration: fp.duration }
         });
         continue;
       }
