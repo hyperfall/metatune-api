@@ -1,10 +1,18 @@
 // utils/fuzzy.js
 
-// import the module…
-const ss = require("string-similarity-js");
-// …then pick the function, whether it's the default export or a named one
-const compareTwoStrings =
-  typeof ss === "function" ? ss : ss.compareTwoStrings || ss.default;
+// pull in the function by name
+const { stringSimilarity } = require("string-similarity-js");
+
+/** Lowercase + alphanumeric only */
+function normalize(str = "") {
+  return str.toLowerCase().replace(/[^a-z0-9]/gi, "").trim();
+}
+
+/** “Real” similarity via string-similarity-js (0–1) */
+function similarity(a = "", b = "") {
+  return stringSimilarity(normalize(a), normalize(b));
+}
+
 
 // Strip out common boilerplate…
 function stripNoise(str = "") {
@@ -21,10 +29,6 @@ function stripNoise(str = "") {
     .trim();
 }
 
-// Lowercase alphanumeric only
-function normalize(str = "") {
-  return str.toLowerCase().replace(/[^a-z0-9]/gi, "").trim();
-}
 
 // Exact = 1, else 0
 function exactScore(a = "", b = "") {
@@ -39,11 +43,6 @@ function fuzzyScore(a = "", b = "") {
   if (na === nb) return 1;
   if (na.includes(nb) || nb.includes(na)) return 0.7;
   return 0;
-}
-
-// “Real” similarity via string-similarity-js (0–1)
-function similarity(a = "", b = "") {
-  return compareTwoStrings(normalize(a), normalize(b));
 }
 
 module.exports = {
