@@ -1,3 +1,5 @@
+// utils/db.js
+
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 
@@ -20,7 +22,10 @@ db.serialize(() => {
   `);
 });
 
-function logMetadata({ title, artist, album, year, source, score }) {
+/**
+ * Persist a tagging event
+ */
+function logToDB({ title, artist, album, year, source, score }) {
   const stmt = db.prepare(`
     INSERT INTO tagged_files (title, artist, album, year, source, score)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -29,4 +34,4 @@ function logMetadata({ title, artist, album, year, source, score }) {
   stmt.finalize();
 }
 
-module.exports = { logMetadata };
+module.exports = { logToDB };
