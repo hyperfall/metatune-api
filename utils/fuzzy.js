@@ -1,12 +1,12 @@
 // utils/fuzzy.js
 
-// pull just the compareTwoStrings fn out of the module
-const { compareTwoStrings } = require("string-similarity-js");
+// import the module…
+const ss = require("string-similarity-js");
+// …then pick the function, whether it's the default export or a named one
+const compareTwoStrings =
+  typeof ss === "function" ? ss : ss.compareTwoStrings || ss.default;
 
-/**
- * Strip out common boilerplate from artist/title strings,
- * e.g. “(Official Video)”, “Live”, “Acoustic”, “Remastered”, etc.
- */
+// Strip out common boilerplate…
 function stripNoise(str = "") {
   return str
     .replace(
@@ -21,17 +21,17 @@ function stripNoise(str = "") {
     .trim();
 }
 
-/** Lowercase alphanumeric only */
+// Lowercase alphanumeric only
 function normalize(str = "") {
   return str.toLowerCase().replace(/[^a-z0-9]/gi, "").trim();
 }
 
-/** Exact = 1, else 0 */
+// Exact = 1, else 0
 function exactScore(a = "", b = "") {
   return normalize(a) === normalize(b) ? 1 : 0;
 }
 
-/** Simple fuzzy: exact=1, substr=0.7, else 0 */
+// Simple fuzzy: exact=1, substr=0.7, else 0
 function fuzzyScore(a = "", b = "") {
   const na = normalize(a);
   const nb = normalize(b);
@@ -41,9 +41,7 @@ function fuzzyScore(a = "", b = "") {
   return 0;
 }
 
-/**
- * “Real” similarity via string-similarity-js (0–1)
- */
+// “Real” similarity via string-similarity-js (0–1)
 function similarity(a = "", b = "") {
   return compareTwoStrings(normalize(a), normalize(b));
 }
