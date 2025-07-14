@@ -1,11 +1,11 @@
 // utils/fuzzy.js
 
-// Pull only compareTwoStrings from the package
+// pull just the compareTwoStrings fn out of the module
 const { compareTwoStrings } = require("string-similarity-js");
 
 /**
- * Strip out common boilerplate:
- *  e.g. “(Official Video)”, “Live”, “Acoustic”, “Remastered”, etc.
+ * Strip out common boilerplate from artist/title strings,
+ * e.g. “(Official Video)”, “Live”, “Acoustic”, “Remastered”, etc.
  */
 function stripNoise(str = "") {
   return str
@@ -41,7 +41,9 @@ function fuzzyScore(a = "", b = "") {
   return 0;
 }
 
-/** “Real” similarity via string-similarity-js (0–1) */
+/**
+ * “Real” similarity via string-similarity-js (0–1)
+ */
 function similarity(a = "", b = "") {
   return compareTwoStrings(normalize(a), normalize(b));
 }
